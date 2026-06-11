@@ -4,6 +4,14 @@
   "private": false,
   "description": "A task board your coding agents claim work from. Backlog packets render as agent prompts; agents claim with a lease and write status back.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thejayer/agent-backlog.git"
+  },
+  "homepage": "https://github.com/thejayer/agent-backlog#readme",
+  "bugs": {
+    "url": "https://github.com/thejayer/agent-backlog/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=20"

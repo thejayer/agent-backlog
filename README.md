@@ -1,5 +1,7 @@
 # Agent Backlog
 
+[![CI](https://github.com/thejayer/agent-backlog/actions/workflows/ci.yml/badge.svg)](https://github.com/thejayer/agent-backlog/actions/workflows/ci.yml)
+
 A small task board that your **coding agents claim work from**.
 
 Most backlogs are written for humans. Agent Backlog stores each task as a

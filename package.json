@@ -1,0 +1,36 @@
+{
+  "name": "agent-backlog",
+  "version": "0.1.0",
+  "private": false,
+  "description": "A task board your coding agents claim work from. Backlog packets render as agent prompts; agents claim with a lease and write status back.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite --config manage/vite.config.mjs --host 127.0.0.1",
+    "build": "vite build --config manage/vite.config.mjs",
+    "start": "node manage/server.mjs",
+    "preview": "vite preview --config manage/vite.config.mjs --host 127.0.0.1",
+    "test": "playwright test --config manage/playwright.config.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "agent": "node scripts/manage-agent.mjs",
+    "manage:dev": "vite --config manage/vite.config.mjs --host 127.0.0.1",
+    "manage:build": "vite build --config manage/vite.config.mjs",
+    "manage:serve": "node manage/server.mjs",
+    "manage:preview": "vite preview --config manage/vite.config.mjs --host 127.0.0.1",
+    "manage:test": "playwright test --config manage/playwright.config.mjs",
+    "manage:agent": "node scripts/manage-agent.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.0.0"
+  },
+  "optionalDependencies": {
+    "@google-cloud/firestore": "^8.6.0"
+  }
+}

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+manage/data/
+test-results/
+playwright-report/
+blob-report/
+.env
+*.log
+.git/

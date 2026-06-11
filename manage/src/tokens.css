@@ -1,0 +1,152 @@
+/* Design Tokens
+   Colors, spacing, typography, radii, and shadows as CSS variables.
+   Edit these values to re-theme the app. */
+
+:root,
+[data-theme="light"] {
+  /* Surfaces */
+  --bg-root: #f4efe6;
+  --bg-primary: #fcfaf5;
+  --bg-secondary: #efe8da;
+  --bg-tertiary: #e7decd;
+
+  /* Borders */
+  --border-primary: #e3d9c8;
+  --border-secondary: rgba(24, 46, 73, 0.06);
+
+  /* Text */
+  --text-primary: #182e49;
+  --text-secondary: #5c6678;
+  --text-muted: #939ba8;
+  --text-on-accent: #10283a;
+  --text-on-danger: #ffffff;
+  --text-on-warning: #10283a;
+  --text-on-success: #fbf7ef;
+
+  /* Accents */
+  --accent-blue: #7bafd4;
+  --accent-purple: #6a4e8c;
+  --accent-green: #2f6e4e;
+  --accent-red: #b23a2e;
+  --accent-orange: #c2703c;
+  --primary-hover: #5e97c4;
+  --overlay-bg: rgba(9, 13, 19, 0.42);
+  --overlay-muted: rgba(9, 13, 19, 0.28);
+  --overlay-strong: rgba(9, 13, 19, 0.62);
+  --surface-wash: rgba(24, 46, 73, 0.03);
+  --surface-hover: rgba(24, 46, 73, 0.05);
+  --canvas-contrast: #ffffff;
+
+  /* Brand */
+  --brand: #1b3a5b;
+  --brand-ink: #fbf7ef;
+  --accent-soft: #7bafd426;
+  --accent-rust: #b44f28;
+
+  /* Pipeline stages */
+  --stage-prospecting: #8a93a1;
+  --stage-holding: #3f6ea5;
+  --stage-active: #b44f28;
+  --stage-dd: #3f86bc;
+  --stage-term: #6a4e8c;
+  --stage-closed: #2f6e4e;
+
+  /* Radii */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-button: 8px;
+  --radius-md: 10px;
+  --radius-panel: 12px;
+  --radius-lg: 14px;
+  --radius-xl: 16px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+
+  /* Spacing scale */
+  --space-0: 0px;
+  --space-px: 1px;
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-2-5: 10px;
+  --space-3: 12px;
+  --space-3-5: 14px;
+  --space-4: 16px;
+  --space-4-5: 18px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Type */
+  --font-sans: 'Hanken Grotesk', -apple-system, blinkmacsystemfont, sans-serif;
+  --font-serif: 'Newsreader', georgia, serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-ui: var(--font-sans);
+  --font-display: var(--font-serif);
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(24, 46, 73, 0.06);
+  --shadow-md: 0 8px 18px -14px rgba(24, 46, 73, 0.32);
+  --shadow-lg: 0 18px 36px -28px rgba(24, 46, 73, 0.34);
+  --shadow-xl: 0 30px 60px -36px rgba(24, 46, 73, 0.38);
+}
+
+[data-theme="dark"] {
+  --bg-root: #0e1621;
+  --bg-primary: #15202e;
+  --bg-secondary: #1b2735;
+  --bg-tertiary: #243140;
+  --border-primary: #273340;
+  --border-secondary: rgba(255, 255, 255, 0.05);
+  --text-primary: #e9e5dc;
+  --text-secondary: #9aa6b4;
+  --text-muted: #66727f;
+  --text-on-accent: #0c131c;
+  --text-on-danger: #ffffff;
+  --text-on-warning: #0c131c;
+  --text-on-success: #0c131c;
+  --accent-blue: #7bafd4;
+  --accent-purple: #a488c8;
+  --accent-green: #4fb081;
+  --accent-red: #e26a53;
+  --accent-orange: #d89352;
+  --primary-hover: #9cc4e0;
+  --overlay-bg: rgba(0, 0, 0, 0.55);
+  --overlay-muted: rgba(0, 0, 0, 0.45);
+  --overlay-strong: rgba(0, 0, 0, 0.72);
+  --surface-wash: rgba(255, 255, 255, 0.025);
+  --surface-hover: rgba(255, 255, 255, 0.045);
+  --canvas-contrast: #ffffff;
+  --brand: #4e84bc;
+  --brand-ink: #0c131c;
+  --accent-soft: #7bafd426;
+  --accent-rust: #d2683c;
+  --stage-prospecting: #8a93a1;
+  --stage-holding: #5b8fbf;
+  --stage-active: #d2683c;
+  --stage-dd: #6ea8d6;
+  --stage-term: #a488c8;
+  --stage-closed: #4fb081;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.12);
+  --shadow-md: 0 8px 18px -14px rgba(0, 0, 0, 0.48);
+  --shadow-lg: 0 18px 36px -28px rgba(0, 0, 0, 0.64);
+  --shadow-xl: 0 30px 60px -34px rgba(0, 0, 0, 0.7);
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+h1,
+h2,
+h3,
+.display {
+  font-family: var(--font-serif);
+  font-weight: 500;
+}
+
+.primary-ink {
+  color: var(--text-on-accent);
+}

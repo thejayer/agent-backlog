@@ -1,0 +1,616 @@
+import { randomUUID } from "node:crypto";
+import { priorityOptions, statusOptions, workItems as seedWorkItems } from "../src/data/workItems.mjs";
+import { readJsonState, writeJsonState } from "./storage.mjs";
+
+const allowedStatuses = new Set(statusOptions.map((status) => status.id));
+const allowedPriorities = new Set(priorityOptions.map((priority) => priority.id));
+const seedLabelsByKey = new Map(seedWorkItems.map((item) => [item.key, item.labels || []]));
+const leasedStatuses = new Set(["claimed", "in_progress"]);
+const completedStatuses = new Set(["needs_review", "done", "blocked"]);
+const defaultLeaseMinutes = 90;
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function splitLines(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+
+  return String(value || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function hasPayloadField(payload, field) {
+  return Object.prototype.hasOwnProperty.call(payload || {}, field);
+}
+
+function splitWritebackLines(payload, ...fields) {
+  for (const field of fields) {
+    if (hasPayloadField(payload, field)) {
+      return splitLines(payload[field]);
+    }
+  }
+
+  return [];
+}
+
+function splitLabels(value) {
+  const rawLabels = Array.isArray(value) ? value : String(value || "").split(/[,\n]/);
+  const labels = rawLabels
+    .map((label) =>
+      String(label || "")
+        .trim()
+        .replace(/^#/, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, ""),
+    )
+    .filter(Boolean);
+
+  return [...new Set(labels)].slice(0, 12);
+}
+
+function slugify(value) {
+  return String(value || "work-packet")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 72);
+}
+
+function normalizeAgentName(payload = {}, fallback = "Unspecified agent") {
+  return String(payload.claimedBy || payload.agent || fallback).trim() || fallback;
+}
+
+function normalizeLeaseMinutes(value) {
+  const minutes = Number(value);
+
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return defaultLeaseMinutes;
+  }
+
+  return Math.min(Math.max(Math.round(minutes), 5), 8 * 60);
+}
+
+function buildAgentRunId(key) {
+  return `${key}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+}
+
+function isLeaseActive(item, now = new Date()) {
+  if (!leasedStatuses.has(item.status) || !item.leaseExpiresAt) {
+    return false;
+  }
+
+  const expiresAt = Date.parse(item.leaseExpiresAt);
+  return Number.isFinite(expiresAt) && expiresAt > now.getTime();
+}
+
+function appendAgentEvent(item, event) {
+  return [...(Array.isArray(item.agentEvents) ? item.agentEvents : []), event].slice(-20);
+}
+
+function countGithubMatches(matches) {
+  return (
+    (matches.pullRequests || []).length +
+    (matches.branches || []).length +
+    (matches.issues || []).length +
+    (matches.workflowRuns || []).length
+  );
+}
+
+function uniqueLines(values) {
+  return [...new Set(splitLines(values))];
+}
+
+function nextKey(items) {
+  const maxNumber = items.reduce((max, item) => {
+    const match = String(item.key || "").match(/^TASK-(\d+)$/);
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 100);
+
+  return `TASK-${maxNumber + 1}`;
+}
+
+function normalizeWorkItem(item) {
+  const hasLabels = Object.prototype.hasOwnProperty.call(item, "labels");
+
+  return {
+    ...item,
+    labels: splitLabels(hasLabels ? item.labels : seedLabelsByKey.get(item.key)),
+  };
+}
+
+function publicWorkItems(items) {
+  return items.map((item) => normalizeWorkItem(item));
+}
+
+async function writeWorkItems(items) {
+  await writeJsonState("work-items", items);
+}
+
+export async function readWorkItems() {
+  const parsed = await readJsonState("work-items", () => clone(seedWorkItems));
+
+  if (!Array.isArray(parsed)) {
+    throw Object.assign(new Error("Manage work-items state must contain an array"), { statusCode: 500 });
+  }
+
+  return parsed.map((item) => normalizeWorkItem(item));
+}
+
+export async function resetWorkItems() {
+  const items = clone(seedWorkItems);
+  await writeWorkItems(items);
+  return publicWorkItems(items);
+}
+
+export async function listWorkItems() {
+  return publicWorkItems(await readWorkItems());
+}
+
+export async function createWorkItem(payload) {
+  const items = await readWorkItems();
+  const key = nextKey(items);
+  const title = String(payload.title || "Untitled work packet").trim();
+  const now = new Date().toISOString();
+  const status = payload.ready ? "ready_for_agent" : payload.status || "draft";
+  const priority = allowedPriorities.has(payload.priority) ? payload.priority : "medium";
+  const branchSlug = slugify(title);
+
+  if (!allowedStatuses.has(status)) {
+    throw Object.assign(new Error(`Invalid status: ${status}`), { statusCode: 400 });
+  }
+
+  const workItem = {
+    id: `w-${key.toLowerCase()}`,
+    key,
+    title,
+    status,
+    priority,
+    project: String(payload.project || "Manage").trim(),
+    repo: String(payload.repo || "agent-backlog").trim(),
+    labels: splitLabels(payload.labels),
+    suggestedBranch: String(payload.branch || `codex/${key.toLowerCase()}-${branchSlug}`).trim(),
+    summary: String(payload.summary || "").trim(),
+    desiredOutcome: String(payload.desiredOutcome || "").trim(),
+    acceptanceCriteria: splitLines(payload.acceptanceCriteria),
+    relevantFiles: splitLines(payload.relevantFiles),
+    relevantUrls: splitLines(payload.relevantUrls),
+    implementationNotes: splitLines(payload.implementationNotes),
+    testCommands: splitLines(payload.testCommands),
+    deployNotes: String(payload.deployNotes || "Not recorded.").trim(),
+    blockedBy: String(payload.blockedBy || "").trim(),
+    githubBranch: String(payload.githubBranch || "").trim(),
+    githubPrUrl: String(payload.githubPrUrl || "").trim(),
+    githubIssueUrl: String(payload.githubIssueUrl || "").trim(),
+    githubIssueNumber: payload.githubIssueNumber ? Number(payload.githubIssueNumber) : null,
+    githubIssueTitle: String(payload.githubIssueTitle || "").trim(),
+    githubLinks: null,
+    lastGithubLinkUpdate: null,
+    agent: String(payload.agent || "").trim(),
+    claimedBy: "",
+    claimedAt: "",
+    agentRunId: "",
+    leaseExpiresAt: "",
+    agentEvents: [],
+    lastAgentUpdate: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const nextItems = [workItem, ...items];
+  await writeWorkItems(nextItems);
+
+  return {
+    workItem,
+    workItems: publicWorkItems(nextItems),
+  };
+}
+
+export async function patchWorkItem(key, updates) {
+  const items = await readWorkItems();
+  const normalizedKey = String(key || "").toUpperCase();
+  const index = items.findIndex((item) => item.key === normalizedKey);
+
+  if (index === -1) {
+    throw Object.assign(new Error("Work packet not found"), { statusCode: 404 });
+  }
+
+  const allowedFields = new Set([
+    "title",
+    "status",
+    "priority",
+    "project",
+    "repo",
+    "labels",
+    "suggestedBranch",
+    "summary",
+    "desiredOutcome",
+    "acceptanceCriteria",
+    "relevantFiles",
+    "relevantUrls",
+    "implementationNotes",
+    "testCommands",
+    "deployNotes",
+    "blockedBy",
+    "githubBranch",
+    "githubPrUrl",
+    "githubIssueUrl",
+    "githubIssueNumber",
+    "githubIssueTitle",
+    "agent",
+    "claimedBy",
+    "claimedAt",
+    "agentRunId",
+    "leaseExpiresAt",
+  ]);
+  const listFields = new Set(["acceptanceCriteria", "relevantFiles", "relevantUrls", "implementationNotes", "testCommands"]);
+  const cleaned = {};
+
+  for (const [field, value] of Object.entries(updates || {})) {
+    if (value === undefined) {
+      continue;
+    }
+
+    if (!allowedFields.has(field)) {
+      continue;
+    }
+
+    if (field === "status" && !allowedStatuses.has(value)) {
+      throw Object.assign(new Error(`Invalid status: ${value}`), { statusCode: 400 });
+    }
+
+    if (field === "priority" && !allowedPriorities.has(value)) {
+      throw Object.assign(new Error(`Invalid priority: ${value}`), { statusCode: 400 });
+    }
+
+    cleaned[field] =
+      field === "labels"
+        ? splitLabels(value)
+        : field === "githubIssueNumber"
+          ? Number(value) || null
+          : listFields.has(field)
+            ? splitLines(value)
+            : value;
+  }
+
+  const nextItem = {
+    ...items[index],
+    ...cleaned,
+    updatedAt: new Date().toISOString(),
+  };
+  const nextItems = [...items];
+  nextItems[index] = nextItem;
+  await writeWorkItems(nextItems);
+
+  return {
+    workItem: nextItem,
+    workItems: publicWorkItems(nextItems),
+  };
+}
+
+export async function claimWorkItem(key, payload = {}) {
+  const items = await readWorkItems();
+  const normalizedKey = String(key || "").toUpperCase();
+  const index = items.findIndex((item) => item.key === normalizedKey);
+
+  if (index === -1) {
+    throw Object.assign(new Error("Work packet not found"), { statusCode: 404 });
+  }
+
+  const currentItem = items[index];
+  const now = new Date();
+
+  if (isLeaseActive(currentItem, now) && !payload.force) {
+    throw Object.assign(
+      new Error(
+        `${currentItem.key} is already claimed by ${currentItem.claimedBy || currentItem.agent || "another agent"} until ${currentItem.leaseExpiresAt}`,
+      ),
+      { statusCode: 409 },
+    );
+  }
+
+  const leaseMinutes = normalizeLeaseMinutes(payload.leaseMinutes);
+  const claimedAt = now.toISOString();
+  const leaseExpiresAt = new Date(now.getTime() + leaseMinutes * 60_000).toISOString();
+  const agentName = normalizeAgentName(payload, currentItem.agent || "Unspecified agent");
+  const agentRunId = String(payload.agentRunId || "").trim() || buildAgentRunId(currentItem.key);
+  const note = String(payload.note || `Claimed for ${leaseMinutes} minutes.`).trim();
+  const agent = String(payload.agent || currentItem.agent || "").trim();
+  const event = {
+    type: "claimed",
+    at: claimedAt,
+    agent: agentName,
+    agentRunId,
+    leaseExpiresAt,
+    note,
+  };
+  const nextItem = {
+    ...currentItem,
+    status: "claimed",
+    agent,
+    claimedBy: agentName,
+    claimedAt,
+    agentRunId,
+    leaseExpiresAt,
+    lastAgentUpdate: {
+      at: claimedAt,
+      agent: agentName,
+      status: "claimed",
+      note,
+      agentRunId,
+    },
+    agentEvents: appendAgentEvent(currentItem, event),
+    updatedAt: claimedAt,
+  };
+  const nextItems = [...items];
+  nextItems[index] = nextItem;
+  await writeWorkItems(nextItems);
+
+  return {
+    workItem: nextItem,
+    workItems: publicWorkItems(nextItems),
+  };
+}
+
+export async function updateTaskStatus(key, payload = {}) {
+  const status = String(payload.status || "").trim();
+
+  if (!allowedStatuses.has(status)) {
+    throw Object.assign(new Error(`Invalid status: ${status}`), { statusCode: 400 });
+  }
+
+  const items = await readWorkItems();
+  const normalizedKey = String(key || "").toUpperCase();
+  const index = items.findIndex((item) => item.key === normalizedKey);
+
+  if (index === -1) {
+    throw Object.assign(new Error("Work packet not found"), { statusCode: 404 });
+  }
+
+  const currentItem = items[index];
+  const now = new Date().toISOString();
+  const agentName = String(payload.agent || currentItem.claimedBy || currentItem.agent || "Unspecified agent").trim();
+  const agentRunId = String(payload.agentRunId || currentItem.agentRunId || "").trim();
+  const note = String(payload.note || "").trim();
+  const testsRun = splitWritebackLines(payload, "testsRun", "testCommandsRun");
+  const filesChanged = splitWritebackLines(payload, "filesChanged");
+  const blockers = splitWritebackLines(payload, "blockers");
+  const nextSteps = splitWritebackLines(payload, "nextSteps");
+  const githubBranch = payload.githubBranch === undefined ? currentItem.githubBranch : String(payload.githubBranch || "").trim();
+  const githubPrUrl = payload.githubPrUrl === undefined ? currentItem.githubPrUrl : String(payload.githubPrUrl || "").trim();
+  const lastAgentUpdate = {
+    at: now,
+    agent: agentName,
+    status,
+    note,
+    agentRunId,
+    githubBranch,
+    githubPrUrl,
+    testsRun,
+    filesChanged,
+    blockers,
+    nextSteps,
+  };
+  const event = {
+    type: "status",
+    at: now,
+    agent: agentName,
+    status,
+    note,
+    agentRunId,
+    githubBranch,
+    githubPrUrl,
+    testsRun,
+    filesChanged,
+    blockers,
+    nextSteps,
+  };
+  const nextItem = {
+    ...currentItem,
+    status,
+    agent: payload.agent === undefined ? currentItem.agent : String(payload.agent || "").trim(),
+    githubBranch,
+    githubPrUrl,
+    blockedBy: hasPayloadField(payload, "blockers") ? blockers.join("\n") : currentItem.blockedBy,
+    leaseExpiresAt: completedStatuses.has(status) ? "" : currentItem.leaseExpiresAt,
+    lastAgentUpdate,
+    agentEvents: appendAgentEvent(currentItem, event),
+    updatedAt: now,
+  };
+  const nextItems = [...items];
+  nextItems[index] = nextItem;
+  await writeWorkItems(nextItems);
+
+  return {
+    workItem: nextItem,
+    workItems: publicWorkItems(nextItems),
+  };
+}
+
+export async function applyGithubMatches(key, matches = {}) {
+  const items = await readWorkItems();
+  const normalizedKey = String(key || "").toUpperCase();
+  const index = items.findIndex((item) => item.key === normalizedKey);
+
+  if (index === -1) {
+    throw Object.assign(new Error("Work packet not found"), { statusCode: 404 });
+  }
+
+  const currentItem = items[index];
+  const now = new Date().toISOString();
+  const matchCount = countGithubMatches(matches);
+  const nextItem = {
+    ...currentItem,
+    githubBranch: matches.bestBranch || currentItem.githubBranch || "",
+    githubPrUrl: matches.bestPrUrl || currentItem.githubPrUrl || "",
+    githubLinks: {
+      ...matches,
+      matchedAt: matches.matchedAt || now,
+    },
+    lastGithubLinkUpdate: {
+      at: now,
+      source: matches.source || "github-cache",
+      matchCount,
+    },
+    updatedAt: now,
+  };
+  const nextItems = [...items];
+  nextItems[index] = nextItem;
+  await writeWorkItems(nextItems);
+
+  return {
+    workItem: nextItem,
+    workItems: publicWorkItems(nextItems),
+  };
+}
+
+export async function recordGithubIssue(key, issue = {}) {
+  const items = await readWorkItems();
+  const normalizedKey = String(key || "").toUpperCase();
+  const index = items.findIndex((item) => item.key === normalizedKey);
+
+  if (index === -1) {
+    throw Object.assign(new Error("Work packet not found"), { statusCode: 404 });
+  }
+
+  const currentItem = items[index];
+  const now = new Date().toISOString();
+  const issueUrl = String(issue.url || issue.html_url || "").trim();
+  const issueNumber = issue.number ? Number(issue.number) : null;
+  const issueTitle = String(issue.title || currentItem.githubIssueTitle || "").trim();
+  const nextItem = {
+    ...currentItem,
+    githubIssueUrl: issueUrl || currentItem.githubIssueUrl || "",
+    githubIssueNumber: issueNumber || currentItem.githubIssueNumber || null,
+    githubIssueTitle: issueTitle,
+    relevantUrls: issueUrl ? uniqueLines([...(currentItem.relevantUrls || []), issueUrl]) : currentItem.relevantUrls,
+    lastGithubLinkUpdate: {
+      at: now,
+      source: issue.source || "github-issue",
+      matchCount: 1,
+    },
+    updatedAt: now,
+  };
+  const nextItems = [...items];
+  nextItems[index] = nextItem;
+  await writeWorkItems(nextItems);
+
+  return {
+    workItem: nextItem,
+    workItems: publicWorkItems(nextItems),
+  };
+}
+
+export async function importGithubIssues(githubCache, { repo: repoFilter = "", limit = 12 } = {}) {
+  const items = await readWorkItems();
+  const existingIssueUrls = new Set(
+    items.flatMap((item) => [item.githubIssueUrl, ...(Array.isArray(item.relevantUrls) ? item.relevantUrls : [])]).filter(Boolean),
+  );
+  const now = new Date().toISOString();
+  const imported = [];
+  const skipped = [];
+  const maxImports = Math.min(Math.max(Number(limit) || 12, 1), 50);
+  let nextItems = [...items];
+
+  for (const repo of githubCache?.repos || []) {
+    if (repoFilter && repo.id !== repoFilter && repo.name !== repoFilter && repo.slug !== repoFilter) {
+      continue;
+    }
+
+    for (const issue of repo.latestIssues || []) {
+      if (imported.length >= maxImports) {
+        break;
+      }
+
+      if (!issue?.url || existingIssueUrls.has(issue.url)) {
+        skipped.push({ repo: repo.id, url: issue?.url || "", reason: "already imported" });
+        continue;
+      }
+
+      const key = nextKey(nextItems);
+      const title = String(issue.title || `GitHub issue #${issue.number}`).trim();
+      const workItem = {
+        id: `w-${key.toLowerCase()}`,
+        key,
+        title,
+        status: "draft",
+        priority: "medium",
+        project: repo.domain || repo.name || "GitHub import",
+        repo: repo.id || repo.name || "",
+        labels: splitLabels([...(issue.labels || []), "github-sync"]),
+        suggestedBranch: `codex/${key.toLowerCase()}-${slugify(title)}`,
+        summary: `Imported from GitHub issue #${issue.number || "unknown"} in ${repo.slug || repo.name}.`,
+        desiredOutcome: "Triage this GitHub issue and turn it into an agent-ready work packet.",
+        acceptanceCriteria: [
+          "The underlying GitHub issue is understood and scoped.",
+          "Acceptance criteria, relevant files, and test commands are completed before agent pickup.",
+        ],
+        relevantFiles: [],
+        relevantUrls: [issue.url],
+        implementationNotes: [
+          `Imported from GitHub cache source ${githubCache?.source || "unknown"}.`,
+          "Edit this draft before marking it ready for agent pickup.",
+        ],
+        testCommands: [],
+        deployNotes: "Not recorded.",
+        blockedBy: "",
+        githubBranch: "",
+        githubPrUrl: "",
+        githubIssueUrl: issue.url,
+        githubIssueNumber: issue.number ? Number(issue.number) : null,
+        githubIssueTitle: title,
+        githubLinks: {
+          repoId: repo.id || "",
+          repoSlug: repo.slug || "",
+          source: githubCache?.source || "github-cache",
+          matchedAt: now,
+          bestBranch: "",
+          bestPrUrl: "",
+          pullRequests: [],
+          branches: [],
+          issues: [issue],
+          workflowRuns: [],
+        },
+        lastGithubLinkUpdate: {
+          at: now,
+          source: githubCache?.source || "github-cache",
+          matchCount: 1,
+        },
+        agent: "",
+        claimedBy: "",
+        claimedAt: "",
+        agentRunId: "",
+        leaseExpiresAt: "",
+        agentEvents: [],
+        lastAgentUpdate: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      nextItems = [workItem, ...nextItems];
+      existingIssueUrls.add(issue.url);
+      imported.push({
+        key,
+        repo: workItem.repo,
+        issueNumber: workItem.githubIssueNumber,
+        issueUrl: workItem.githubIssueUrl,
+        title: workItem.title,
+      });
+    }
+  }
+
+  if (imported.length > 0) {
+    await writeWorkItems(nextItems);
+  }
+
+  return {
+    imported,
+    skipped,
+    workItems: publicWorkItems(nextItems),
+  };
+}

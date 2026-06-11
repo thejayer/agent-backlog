@@ -1,0 +1,14 @@
+node_modules/
+dist/
+
+# Runtime state (file storage + snapshots)
+manage/data/
+
+# Test output
+test-results/
+playwright-report/
+blob-report/
+
+# Local env + logs
+.env
+*.log

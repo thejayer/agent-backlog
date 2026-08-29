@@ -114,6 +114,29 @@ describe("recoverAgentRun", () => {
     });
   });
 
+  it("rejects agent force-claim of a healthy live lease", async () => {
+    const claimed = await claimReadyPacket();
+
+    await expect(
+      claimWorkItem("TASK-101", { agent: "Claude Code", force: true }),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      message: expect.stringMatching(/requires an operator/),
+    });
+
+    const latest = (await listWorkItems()).find((item) => item.key === "TASK-101");
+    expect(latest.claimedBy).toBe("Codex");
+    expect(latest.agentRunId).toBe(claimed.workItem.agentRunId);
+  });
+
+  it("lets an operator force-claim a live lease", async () => {
+    await claimReadyPacket();
+    const result = await claimWorkItem("TASK-101", { agent: "Operator", force: true }, { allowForce: true });
+
+    expect(result.workItem.claimedBy).toBe("Operator");
+    expect(result.workItem.status).toBe("claimed");
+  });
+
   it("does not let a force reclaim overwrite a newer run id", async () => {
     const first = await claimReadyPacket();
     const { patchWorkItem } = await import("./workStore.mjs");

@@ -25,9 +25,10 @@ npm install
 npm run dev          # Vite dev server + API at http://127.0.0.1:5186
 ```
 
-Open http://127.0.0.1:5186 and sign in with the local token **`manage-local`**
-(the default when `MANAGE_AUTH_TOKEN` is unset). You'll get a seeded demo
-backlog across a few example repos.
+Open http://127.0.0.1:5186 and sign in with the local **operator** token
+**`manage-local`**. Agents use a separate bearer token, **`manage-local-agent`**,
+when those env vars are unset. You'll get a seeded demo backlog across a few
+example repos.
 
 To run the built app the way it ships in production:
 
@@ -45,7 +46,7 @@ npm run smoke        # boots the server and exercises the agent endpoints
 ## How an agent uses it
 
 ```bash
-export MANAGE_AUTH_TOKEN="manage-local"   # the agent bearer token
+export MANAGE_AUTH_TOKEN="manage-local-agent"   # the agent bearer token
 
 # 1. Read the instructions and claim the next ready packet for a repo
 curl -H "Authorization: Bearer $MANAGE_AUTH_TOKEN" \
@@ -67,6 +68,9 @@ curl -H "Authorization: Bearer $MANAGE_AUTH_TOKEN" \
 There's also a lifecycle CLI that wraps these calls:
 
 ```bash
+npm run agent -- doctor
+npm run agent -- next-key
+npm run agent -- create --title "Harden login rate limits" --repo web-app --ready
 npm run agent -- claim-next --repo web-app
 npm run agent -- progress TASK-101 --note "Implementation started"
 npm run agent -- extend TASK-101 --lease-minutes 60
@@ -107,27 +111,37 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
 | POST | `/api/work-items` | Create a packet |
 | PATCH | `/api/work-items/{key}` | Edit a packet |
 | GET | `/api/agent/next?repo=&label=` | Peek at the next ready packet |
+| GET | `/api/agent/next-key` | Next unused `TASK-*` key |
 | POST | `/api/agent/next/claim` | Claim the next ready packet |
+| POST | `/api/agent/tasks` | Create a packet (agent lifecycle) |
 | POST | `/api/agent/tasks/{key}/claim` | Claim a specific packet |
 | POST | `/api/agent/tasks/{key}/status` | Write status back |
-| POST | `/api/agent/tasks/{key}/recovery` | Recover a run: `extend`, `reclaim`, or `release` |
+| POST | `/api/agent/tasks/{key}/recovery` | Recover a run: `extend`, `reclaim`, or `release` (operator) |
 | GET | `/agent/{key}.md` | Packet as a Markdown prompt |
 | GET | `/agent/instructions.md` | Agent onboarding instructions |
 | GET | `/api/agent/bootstrap` | Machine-readable endpoint + command map |
 | POST | `/api/github/sync` | Refresh GitHub cache (`{"mock":true}` for demo) |
 | GET/POST | `/api/backups` | List / create state snapshots |
 
-All routes except the public ones require `Authorization: Bearer <MANAGE_AUTH_TOKEN>`
-or a signed session cookie.
+All routes except the public ones require a signed operator session cookie or
+`Authorization: Bearer <MANAGE_AUTH_TOKEN>` for agent lifecycle routes.
 
 ## Auth
 
-- **Agents** use a single bearer token (`MANAGE_AUTH_TOKEN`).
-- **Humans** can sign in with that token, or via **GitHub OAuth** restricted to an
-  allowlist (`MANAGE_ALLOWED_GITHUB_LOGINS`) when `GITHUB_CLIENT_ID` /
-  `GITHUB_CLIENT_SECRET` are set.
-- In production the server **refuses to start** unless `MANAGE_AUTH_TOKEN` and
-  `MANAGE_AUTH_SECRET` are set, so it never runs on the public dev defaults.
+Roles: **operator/admin** (full), **viewer** (`workspace:view`), **agent**
+(`agent:read` + `agent:lifecycle`).
+
+- **Agents** use `MANAGE_AUTH_TOKEN` as a bearer token for claim, status,
+  bootstrap, next, next-key, and `POST /api/agent/tasks`. That token **cannot**
+  create a browser session.
+- **Humans** sign in with GitHub OAuth (allowlisted logins via
+  `MANAGE_ALLOWED_GITHUB_LOGINS`) and/or a separate operator / break-glass token
+  (`MANAGE_OPERATOR_TOKEN`, local default `manage-local`). The two tokens must
+  differ.
+- Cookie-authenticated writes require a same-origin `Origin` header or
+  `x-csrf-protection: 1`.
+- In production the server **refuses to start** if `MANAGE_AUTH_TOKEN` or
+  `MANAGE_AUTH_SECRET` is missing, or if the operator and agent tokens collide.
 
 ## Storage
 
@@ -147,6 +161,7 @@ docker run -p 8080:8080 \
   -e NODE_ENV=production \
   -e MANAGE_AUTH_TOKEN=... \
   -e MANAGE_AUTH_SECRET=... \
+  -e MANAGE_OPERATOR_TOKEN=... \
   agent-backlog
 ```
 

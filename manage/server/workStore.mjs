@@ -96,6 +96,10 @@ function nextKey(items) {
   return `TASK-${maxNumber + 1}`;
 }
 
+export async function nextWorkItemKey() {
+  return nextKey(await readWorkItems());
+}
+
 function normalizeWorkItem(item) {
   const hasLabels = Object.prototype.hasOwnProperty.call(item, "labels");
 
@@ -282,7 +286,7 @@ export async function patchWorkItem(key, updates) {
   };
 }
 
-export async function claimWorkItem(key, payload = {}) {
+export async function claimWorkItem(key, payload = {}, { allowForce = false } = {}) {
   const items = await readWorkItems();
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
@@ -298,7 +302,17 @@ export async function claimWorkItem(key, payload = {}) {
     assertExpectedAgentRunId(currentItem, payload.expectedAgentRunId);
   }
 
-  if (isLeaseActive(currentItem, now) && !payload.force) {
+  const requestedForce = Boolean(payload.force);
+  const force = requestedForce && allowForce;
+
+  if (isLeaseActive(currentItem, now) && requestedForce && !allowForce) {
+    throw Object.assign(
+      new Error("Force-claiming an active lease requires an operator"),
+      { statusCode: 403 },
+    );
+  }
+
+  if (isLeaseActive(currentItem, now) && !force) {
     throw Object.assign(
       new Error(
         `${currentItem.key} is already claimed by ${currentItem.claimedBy || currentItem.agent || "another agent"} until ${currentItem.leaseExpiresAt}`,
@@ -421,7 +435,7 @@ export async function recoverAgentRun(key, payload = {}, { actor: authenticatedA
       force: true,
       expectedAgentRunId: payload.agentRunId,
       note: String(payload.note || `Reclaimed from ${previousRunId}.`).trim(),
-    });
+    }, { allowForce: true });
     return { action, ...result };
   }
 

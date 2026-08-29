@@ -1,6 +1,16 @@
 import { buildAgentBootstrap, buildAgentInstructions, buildAgentPrompt, findNextWorkItem } from "../src/lib/agentPrompt.mjs";
 import { labelOptions, repositories, statusOptions } from "../src/data/workItems.mjs";
-import { clearSessionCookie, createSessionCookie, getAccessToken, getGithubOAuthStatus, getSession, isAuthenticated, isPublicRoute } from "./auth.mjs";
+import {
+  clearSessionCookie,
+  createSessionCookie,
+  getAccessToken,
+  getGithubOAuthStatus,
+  getOperatorAccessToken,
+  getSession,
+  hasValidLoginToken,
+  isPublicRoute,
+} from "./auth.mjs";
+import { authorizeManageRequest, managePermissions, requireBrowserWriteProtection, roleHasPermission } from "./authorization.mjs";
 import { findGithubMatchesForItem, hasGithubMatches } from "./githubLinks.mjs";
 import { createGithubIssueForWorkItem } from "./githubIssues.mjs";
 import { readGithubCache, syncGithubCache } from "./githubSync.mjs";
@@ -15,9 +25,12 @@ import {
   patchWorkItem,
   recordGithubIssue,
   recoverAgentRun,
+  nextWorkItemKey,
   resetWorkItems,
   updateTaskStatus,
 } from "./workStore.mjs";
+
+const RESET_CONFIRMATION = "RESET MANAGE";
 
 function send(res, status, body, contentType) {
   res.statusCode = status;
@@ -98,16 +111,26 @@ function withPrompt(workItem, baseUrl) {
 }
 
 function agentTokenHint() {
-  return getAccessToken() === "manage-local" ? "manage-local" : "$MANAGE_AUTH_TOKEN";
+  return getAccessToken() === "manage-local-agent" ? "manage-local-agent" : "$MANAGE_AUTH_TOKEN";
 }
 
 function authProviderSummary() {
   const github = getGithubOAuthStatus();
 
   return {
-    token: true,
+    token: Boolean(getOperatorAccessToken()),
     github: github.available,
   };
+}
+
+function canForceClaim(session) {
+  return roleHasPermission(session?.user?.role, managePermissions.updateWorkspace);
+}
+
+function assertTypedConfirmation(received, expected) {
+  if (String(received || "") !== String(expected || "")) {
+    throw Object.assign(new Error(`Type ${expected} to confirm this destructive action`), { statusCode: 400 });
+  }
 }
 
 function githubStatusSummary() {
@@ -161,7 +184,7 @@ async function handleRoute(req, res, baseUrl) {
 
     sendJson(res, 200, {
       authenticated: Boolean(session),
-      mode: session?.mode || (getAccessToken() === "manage-local" ? "local" : "configured"),
+      mode: session?.mode || (getOperatorAccessToken() === "manage-local" ? "local" : "configured"),
       user: session?.user || null,
       providers: authProviderSummary(),
       loginUrls: {
@@ -179,7 +202,7 @@ async function handleRoute(req, res, baseUrl) {
 
     const body = await readJsonBody(req);
 
-    if (String(body.token || "") !== getAccessToken()) {
+    if (!hasValidLoginToken(body.token)) {
       sendJson(res, 401, { error: "Invalid access token" });
       return true;
     }
@@ -195,6 +218,7 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
+    requireBrowserWriteProtection(req, { session: getSession(req), baseUrl });
     res.setHeader("Set-Cookie", clearSessionCookie());
     sendJson(res, 200, { authenticated: false });
     return true;
@@ -206,7 +230,7 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const login = getGithubLoginStart(baseUrl);
+    const login = getGithubLoginStart(baseUrl, url.searchParams.get("returnTo") || "/");
     redirect(res, login.url, [login.cookie]);
     return true;
   }
@@ -218,14 +242,14 @@ async function handleRoute(req, res, baseUrl) {
     }
 
     const result = await completeGithubLogin(req, url, baseUrl);
-    redirect(res, "/", [result.cookie, result.clearStateCookie]);
+    redirect(res, result.returnTo || "/", [result.cookie, result.clearStateCookie]);
     return true;
   }
 
-  if ((pathname.startsWith("/api/") || pathname.startsWith("/agent/")) && !isPublicRoute(pathname) && !isAuthenticated(req)) {
-    sendJson(res, 401, { error: "Authentication required" });
-    return true;
-  }
+  const authorization =
+    (pathname.startsWith("/api/") || pathname.startsWith("/agent/")) && !isPublicRoute(pathname)
+      ? authorizeManageRequest(req, { pathname, method, baseUrl })
+      : null;
 
   if (pathname === "/api/system/status") {
     if (method !== "GET") {
@@ -492,6 +516,8 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
+    const body = await readJsonBody(req);
+    assertTypedConfirmation(body.confirmation, RESET_CONFIRMATION);
     sendJson(res, 200, { workItems: await resetWorkItems() });
     return true;
   }
@@ -510,6 +536,30 @@ async function handleRoute(req, res, baseUrl) {
         labelOptions,
         tokenHint: agentTokenHint(),
       }),
+    });
+    return true;
+  }
+
+  if (pathname === "/api/agent/next-key") {
+    if (method !== "GET") {
+      methodAllowed(res, ["GET"]);
+      return true;
+    }
+
+    sendJson(res, 200, { nextKey: await nextWorkItemKey(), source: "manage" });
+    return true;
+  }
+
+  if (pathname === "/api/agent/tasks") {
+    if (method !== "POST") {
+      methodAllowed(res, ["POST"]);
+      return true;
+    }
+
+    const result = await createWorkItem(await readJsonBody(req));
+    sendJson(res, 201, {
+      ...result,
+      ...withPrompt(result.workItem, baseUrl),
     });
     return true;
   }
@@ -534,7 +584,7 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await claimWorkItem(item.key, body);
+    const result = await claimWorkItem(item.key, body, { allowForce: canForceClaim(authorization?.session) });
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
     return true;
   }
@@ -600,7 +650,9 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await claimWorkItem(decodeURIComponent(claimMatch[1]), await readJsonBody(req));
+    const result = await claimWorkItem(decodeURIComponent(claimMatch[1]), await readJsonBody(req), {
+      allowForce: canForceClaim(authorization?.session),
+    });
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
     return true;
   }
@@ -614,7 +666,7 @@ async function handleRoute(req, res, baseUrl) {
 
     const key = decodeURIComponent(recoveryMatch[1]);
     const body = await readJsonBody(req);
-    const session = getSession(req);
+    const session = authorization?.session || getSession(req);
     const actor = session?.user?.login || session?.user?.name || body.agent || "Operator";
     const result = await recoverAgentRun(key, body, { actor });
     sendJson(res, 200, {
@@ -664,6 +716,8 @@ export async function routeManageRequest(req, res, baseUrl) {
     const status = error.statusCode || (error instanceof SyntaxError ? 400 : 500);
     sendJson(res, status, {
       error: error.message || "Manage API request failed",
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.details ? { details: error.details } : {}),
     });
     return true;
   }

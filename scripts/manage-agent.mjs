@@ -5,12 +5,13 @@ import { performance } from "node:perf_hooks";
 import {
   AGENT_RUN_EXTEND_LEASE_MINUTES,
   AGENT_RUN_RECLAIM_LEASE_MINUTES,
+  evaluateAgentCompatibility,
 } from "../manage/src/lib/agentRunContract.mjs";
 
 const DEFAULT_BASE_URL = process.env.MANAGE_BASE_URL || "http://127.0.0.1:5186";
 const DEFAULT_AGENT = "Codex";
 const DEFAULT_OWNER = "your-org";
-const REPEATABLE_OPTIONS = new Set(["test", "testsRun", "file", "filesChanged", "blocker", "blockers", "next", "nextSteps", "cmd"]);
+const REPEATABLE_OPTIONS = new Set(["test", "testsRun", "file", "filesChanged", "blocker", "blockers", "next", "nextSteps", "cmd", "label", "labels"]);
 
 function usage() {
   return `Agent Backlog agent lifecycle helper
@@ -21,15 +22,18 @@ Usage:
 Commands:
   claim-next              Claim the next ready packet.
   claim <KEY>             Claim a specific packet.
-  extend <KEY>            Extend an active run lease.
-  reclaim <KEY>           Reclaim a stale, incomplete, or failed run.
-  release <KEY>           Release the observed run to the ready queue.
+  extend <KEY>            Extend an active run lease (operator session).
+  reclaim <KEY>           Reclaim a stale, incomplete, or failed run (operator session).
+  release <KEY>           Release the observed run to the ready queue (operator session).
   progress <KEY>          Write status=in_progress.
   review <KEY>            Write status=needs_review.
   blocked <KEY>           Write status=blocked.
   status <KEY>            Write an explicit status with --status.
   closeout <KEY>          Verify a merged PR with gh and write status=done.
   validate                Run local validation commands and print testsRun lines.
+  doctor                  Verify CLI/server compatibility and agent authentication.
+  next-key                Print the next available TASK- key.
+  create                  Create a new work packet via the agent API.
 
 Common options:
   --base-url <url>        Manage base URL. Default: ${DEFAULT_BASE_URL}
@@ -64,6 +68,9 @@ Examples:
   npm run manage:agent -- review TASK-113 --branch codex/foo --pr https://github.com/your-org/web-app/pull/107 --test "npm test - passed" --file src/App.jsx
   npm run manage:agent -- closeout TASK-113 --repo your-org/web-app --pr 107
   npm run manage:agent -- validate --cmd "npm test" --cmd "npm run build"
+  npm run manage:agent -- next-key
+  npm run manage:agent -- doctor
+  npm run manage:agent -- create --title "Harden login rate limits" --summary "..." --repo web-app --priority high --ready
 `;
 }
 
@@ -90,7 +97,7 @@ function parseArgs(argv) {
     const inlineValue = equalsIndex === -1 ? undefined : raw.slice(equalsIndex + 1);
     const name = toCamel(rawName);
 
-    if (["dryRun", "json", "noSecret", "help"].includes(name)) {
+    if (["dryRun", "json", "noSecret", "help", "ready"].includes(name)) {
       options[name] = true;
       continue;
     }
@@ -179,6 +186,156 @@ async function requestManage(path, { method = "GET", body } = {}, options = {}) 
   }
 
   return payload;
+}
+
+async function doctor(options) {
+  const payload = await requestManage("/api/agent/bootstrap", { method: "GET" }, options);
+
+  if (payload.dryRun) {
+    print("Compatibility preflight", payload, options);
+    return;
+  }
+
+  const result = {
+    ...evaluateAgentCompatibility(payload.bootstrap),
+    baseUrl: normalizeBaseUrl(options),
+    authenticated: true,
+  };
+
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log("Compatibility: OK");
+  console.log(`Base URL: ${result.baseUrl}`);
+  console.log(`CLI contract: ${result.cliContractVersion}`);
+  console.log(`Server contract: ${result.serverContractVersion}`);
+  console.log(`Create endpoint: ${result.createTaskPath}`);
+}
+
+function computeNextKey(items) {
+  const maxNumber = items.reduce((max, item) => {
+    const match = String(item.key || "").match(/^TASK-(\d+)$/);
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 100);
+
+  return `TASK-${maxNumber + 1}`;
+}
+
+async function nextKeyCommand(options) {
+  const fs = await import("node:fs/promises");
+  const pathMod = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+
+  try {
+    const payload = await requestManage("/api/agent/next-key", { method: "GET" }, options);
+
+    if (payload.dryRun) {
+      if (options.json) {
+        console.log(JSON.stringify({ nextKey: "TASK-??", source: "dry-run", request: payload.request }, null, 2));
+      } else {
+        console.log("TASK-??? (dry-run)");
+      }
+      return;
+    }
+
+    const next = payload.nextKey;
+    if (options.json) {
+      console.log(JSON.stringify({ nextKey: next, source: payload.source || "remote" }, null, 2));
+    } else {
+      console.log(next);
+    }
+    return;
+  } catch (remoteErr) {
+    const statusCode = remoteErr?.statusCode;
+    const canUseLocalFallback =
+      statusCode >= 500 ||
+      remoteErr?.cause?.code ||
+      remoteErr?.name === "AbortError";
+
+    if (!canUseLocalFallback && !options.dryRun) {
+      throw remoteErr;
+    }
+
+    if (options.dryRun) {
+      if (options.json) {
+        console.log(JSON.stringify({ nextKey: "TASK-??", source: "dry-run" }, null, 2));
+      } else {
+        console.log("TASK-??? (dry-run)");
+      }
+      return;
+    }
+
+    let localData = null;
+    const scriptDir = pathMod.dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+      pathMod.join(process.cwd(), "manage", "data", "work-items.json"),
+      pathMod.join(scriptDir, "..", "manage", "data", "work-items.json"),
+    ];
+
+    for (const cand of candidates) {
+      try {
+        const content = await fs.readFile(cand, "utf8");
+        const parsed = JSON.parse(content);
+        if (Array.isArray(parsed)) {
+          localData = parsed;
+          break;
+        }
+      } catch {
+        // try the next candidate
+      }
+    }
+
+    if (localData) {
+      const next = computeNextKey(localData);
+      if (options.json) {
+        console.log(JSON.stringify({ nextKey: next, source: "local-work-items.json" }, null, 2));
+      } else {
+        console.log(next);
+      }
+      return;
+    }
+
+    throw new Error("Could not determine next key (remote failed and no local data): " + remoteErr.message);
+  }
+}
+
+async function createPacket(positionals, options) {
+  const title = options.title || (positionals[0] || "Untitled work packet");
+  const body = {
+    title: String(title).trim(),
+    summary: options.summary || "",
+    desiredOutcome: options.desiredOutcome || options.outcome || "",
+    project: options.project || "Agent Backlog",
+    repo: options.repo || "web-app",
+    priority: options.priority || "medium",
+    status: options.status || (options.ready ? "ready_for_agent" : "draft"),
+    labels: asList(options.labels, options.label),
+    acceptanceCriteria: asList(options.acceptanceCriteria, options.criteria),
+    relevantFiles: asList(options.relevantFiles, options.file),
+    relevantUrls: asList(options.relevantUrls, options.url),
+    implementationNotes: asList(options.implementationNotes, options.note),
+    testCommands: asList(options.testCommands, options.testCmd),
+    deployNotes: options.deployNotes || "",
+    blockedBy: options.blockedBy || "",
+    branch: options.branch || options.suggestedBranch || "",
+  };
+
+  if (options.ready) {
+    body.ready = true;
+  }
+
+  const payload = await requestManage("/api/agent/tasks", { method: "POST", body }, options);
+  if (options.json || options.dryRun) {
+    console.log(JSON.stringify(payload, null, 2));
+  } else {
+    const item = payload.workItem || payload;
+    console.log(`Created: ${item.key || "???"} - ${item.title || title}`);
+    if (item.links?.markdown || payload.links?.markdown) {
+      console.log(`Packet: ${item.links?.markdown || payload.links.markdown}`);
+    }
+  }
 }
 
 async function getTask(key, options) {
@@ -423,6 +580,9 @@ async function main() {
   if (command === "status") return writeStatus(positionals, options);
   if (command === "closeout") return closeout(positionals, options);
   if (command === "validate") return validate(options);
+  if (command === "doctor") return doctor(options);
+  if (command === "next-key") return nextKeyCommand(options);
+  if (command === "create") return createPacket(positionals, options);
 
   throw new Error(`Unknown command: ${command}\n\n${usage()}`);
 }

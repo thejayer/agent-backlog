@@ -1,3 +1,8 @@
+import {
+  MANAGE_AGENT_API_CONTRACT_VERSION,
+  MANAGE_AGENT_MINIMUM_CLI_CONTRACT_VERSION,
+} from "./agentRunContract.mjs";
+
 const priorityRank = {
   urgent: 1,
   high: 2,
@@ -641,6 +646,8 @@ export function buildAgentBootstrap({
     next: endpoint(baseUrl, "/api/agent/next?repo={repo}"),
     nextByLabel: endpoint(baseUrl, "/api/agent/next?label={label}"),
     nextClaim: endpoint(baseUrl, "/api/agent/next/claim"),
+    nextKey: endpoint(baseUrl, "/api/agent/next-key"),
+    taskCreate: endpoint(baseUrl, "/api/agent/tasks"),
     taskJson: endpoint(baseUrl, "/api/agent/tasks/{key}"),
     taskMarkdown: endpoint(baseUrl, "/agent/{key}.md"),
     claim: endpoint(baseUrl, "/api/agent/tasks/{key}/claim"),
@@ -651,6 +658,13 @@ export function buildAgentBootstrap({
   return {
     name: "Agent Backlog",
     baseUrl,
+    compatibility: {
+      contractVersion: MANAGE_AGENT_API_CONTRACT_VERSION,
+      minimumCliContractVersion: MANAGE_AGENT_MINIMUM_CLI_CONTRACT_VERSION,
+      lifecycleBasePath: "/api/agent",
+      createTaskPath: "/api/agent/tasks",
+      legacyOperatorBasePath: "/api/work-items",
+    },
     auth: {
       type: "bearer",
       header: "Authorization",

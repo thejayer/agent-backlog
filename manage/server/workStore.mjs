@@ -96,6 +96,10 @@ function nextKey(items) {
   return `TASK-${maxNumber + 1}`;
 }
 
+export async function nextWorkItemKey() {
+  return nextKey(await readWorkItems());
+}
+
 function normalizeWorkItem(item) {
   const hasLabels = Object.prototype.hasOwnProperty.call(item, "labels");
 

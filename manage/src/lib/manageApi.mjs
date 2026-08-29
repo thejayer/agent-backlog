@@ -1,8 +1,11 @@
 async function requestJson(path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const browserWrite = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
   const response = await fetch(path, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...(browserWrite ? { "x-csrf-protection": "1" } : {}),
       ...(options.headers || {}),
     },
   });
@@ -133,9 +136,9 @@ export function importGithubIssues(payload = {}) {
   });
 }
 
-export function resetWorkItems() {
+export function resetWorkItems(confirmation) {
   return requestJson("/api/agent/reset", {
     method: "POST",
-    body: "{}",
+    body: JSON.stringify({ confirmation }),
   });
 }

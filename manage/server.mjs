@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertProductionAuthConfig } from "./server/auth.mjs";
 import { routeManageRequest } from "./server/manageRoutes.mjs";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -11,17 +12,7 @@ const port = Number(process.env.PORT || 4186);
 const host = process.env.HOST || (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1");
 const baseUrl = process.env.MANAGE_BASE_URL || `http://127.0.0.1:${port}`;
 
-// In production, refuse to start on the built-in dev token/secret. Anyone who
-// can read this (open) source would otherwise have full API access.
-if (process.env.NODE_ENV === "production") {
-  if (!process.env.MANAGE_AUTH_TOKEN) {
-    throw new Error("MANAGE_AUTH_TOKEN must be set in production. It is the bearer token coding agents use to reach the API.");
-  }
-
-  if (!process.env.MANAGE_AUTH_SECRET) {
-    throw new Error("MANAGE_AUTH_SECRET must be set in production. It signs browser session cookies.");
-  }
-}
+assertProductionAuthConfig();
 
 const mimeTypes = new Map([
   [".css", "text/css; charset=utf-8"],

@@ -548,7 +548,7 @@ function agentTaskJsonUrl(item) {
 }
 
 function tokenHintForMode(mode) {
-  return mode === "local" ? "manage-local" : "$MANAGE_AUTH_TOKEN";
+  return mode === "local" ? "manage-local-agent" : "$MANAGE_AUTH_TOKEN";
 }
 
 function formatStorageKind(kind) {
@@ -1286,7 +1286,15 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     setSyncMessage("Resetting store");
 
     try {
-      const payload = await resetWorkItemsRequest();
+      const confirmation = window.prompt("Type RESET MANAGE to restore the seed backlog.");
+
+      if (confirmation === null) {
+        setSyncState("idle");
+        setSyncMessage("Reset cancelled");
+        return;
+      }
+
+      const payload = await resetWorkItemsRequest(confirmation);
       setItems(payload.workItems);
       setSelectedKey("TASK-101");
       setSyncState("synced");
@@ -2934,7 +2942,7 @@ function SystemStatusPanel({ systemStatus, systemState, systemMessage, onRefresh
           <SystemStatusItem label="Base URL" value={baseUrl} />
           <SystemStatusItem label="Storage" value={formatStorageKind(storageKind)} tone={storageKind === "firestore" ? "ready" : "info"} />
           <SystemStatusItem label="Auth" value={formatProviderState(githubLoginEnabled, "GitHub")} tone={githubLoginEnabled ? "ready" : "info"} />
-          <SystemStatusItem label="Agent token" value={formatProviderState(tokenLoginEnabled, "Bearer")} tone={tokenLoginEnabled ? "ready" : "blocked"} />
+          <SystemStatusItem label="Operator token" value={formatProviderState(tokenLoginEnabled, "Break-glass")} tone={tokenLoginEnabled ? "ready" : "blocked"} />
           <SystemStatusItem label="GitHub sync" value={githubSyncSource} tone={githubSyncSource === "github-token" ? "ready" : "info"} />
           <SystemStatusItem
             label="Backups"
@@ -3133,9 +3141,9 @@ function LoginScreen({ error, onLogin, sessionInfo }) {
   return (
     <div className="auth-screen">
       <form className="auth-card" onSubmit={submit}>
-        <div className="brand-mark">M</div>
-        <h1>Manage</h1>
-        <p>Open the backlog console with your access token or an allowed GitHub account.</p>
+        <div className="brand-mark">A</div>
+        <h1>Agent Backlog</h1>
+        <p>Sign in with an allowed GitHub account or the operator / break-glass token. The agent bearer token cannot open a browser session.</p>
         {githubLoginUrl ? (
           <>
             <a className="button secondary github-login" href={githubLoginUrl}>
@@ -3147,7 +3155,7 @@ function LoginScreen({ error, onLogin, sessionInfo }) {
           </>
         ) : null}
         <label>
-          <span>Access token</span>
+          <span>Operator token</span>
           <input
             value={token}
             onChange={(event) => setToken(event.target.value)}
@@ -3158,7 +3166,7 @@ function LoginScreen({ error, onLogin, sessionInfo }) {
         </label>
         {error ? <div className="auth-error">{error}</div> : null}
         <button type="submit" className="button primary" disabled={submitting}>
-          {submitting ? "Checking" : "Open Manage"}
+          {submitting ? "Checking" : "Open console"}
         </button>
       </form>
     </div>

@@ -4,6 +4,8 @@ const SESSION_COOKIE = "manage_session";
 const OAUTH_STATE_COOKIE = "manage_oauth_state";
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12;
 const OAUTH_STATE_MAX_AGE_SECONDS = 10 * 60;
+const LOCAL_AGENT_TOKEN = "manage-local-agent";
+const LOCAL_OPERATOR_TOKEN = "manage-local";
 
 function base64url(value) {
   return Buffer.from(value).toString("base64url");
@@ -13,16 +15,68 @@ function fromBase64url(value) {
   return Buffer.from(value, "base64url").toString("utf8");
 }
 
+function isProduction() {
+  return process.env.NODE_ENV === "production";
+}
+
 function getAuthSecret() {
-  return process.env.MANAGE_AUTH_SECRET || process.env.MANAGE_AUTH_TOKEN || process.env.MANAGE_ADMIN_TOKEN || "manage-local-dev-secret";
+  return process.env.MANAGE_AUTH_SECRET || (isProduction() ? "" : process.env.MANAGE_AUTH_TOKEN || process.env.MANAGE_ADMIN_TOKEN || "manage-local-dev-secret");
 }
 
 function hasConfiguredSecret() {
-  return Boolean(process.env.MANAGE_AUTH_SECRET || process.env.MANAGE_AUTH_TOKEN || process.env.MANAGE_ADMIN_TOKEN);
+  return Boolean(process.env.MANAGE_AUTH_SECRET);
+}
+
+function hasConflictingAccessTokens() {
+  const agentToken = process.env.MANAGE_AUTH_TOKEN;
+  const operatorToken = process.env.MANAGE_OPERATOR_TOKEN;
+  return Boolean(agentToken && operatorToken && agentToken === operatorToken);
+}
+
+export function getMissingProductionAuthConfig() {
+  if (!isProduction()) {
+    return [];
+  }
+
+  const invalid = ["MANAGE_AUTH_SECRET", "MANAGE_AUTH_TOKEN"].filter((key) => !process.env[key]);
+
+  if (hasConflictingAccessTokens()) {
+    invalid.push("MANAGE_OPERATOR_TOKEN (must differ from MANAGE_AUTH_TOKEN)");
+  }
+
+  return invalid;
+}
+
+export function assertProductionAuthConfig() {
+  const invalid = getMissingProductionAuthConfig();
+
+  if (invalid.length > 0) {
+    throw new Error(`Production auth is not configured; invalid or missing ${invalid.join(", ")}`);
+  }
 }
 
 export function getAccessToken() {
-  return process.env.MANAGE_AUTH_TOKEN || process.env.MANAGE_ADMIN_TOKEN || "manage-local";
+  if (process.env.MANAGE_AUTH_TOKEN) {
+    return process.env.MANAGE_AUTH_TOKEN;
+  }
+
+  if (isProduction()) {
+    return "";
+  }
+
+  return LOCAL_AGENT_TOKEN;
+}
+
+export function getOperatorAccessToken() {
+  if (process.env.MANAGE_OPERATOR_TOKEN) {
+    return hasConflictingAccessTokens() ? "" : process.env.MANAGE_OPERATOR_TOKEN;
+  }
+
+  if (isProduction()) {
+    return "";
+  }
+
+  return process.env.MANAGE_ADMIN_TOKEN || LOCAL_OPERATOR_TOKEN;
 }
 
 function sign(value) {
@@ -54,6 +108,12 @@ function safeEqual(left, right) {
   return crypto.timingSafeEqual(supplied, expected);
 }
 
+export function hasValidLoginToken(token) {
+  const expected = getOperatorAccessToken();
+
+  return Boolean(expected) && safeEqual(token, expected);
+}
+
 function signedPayload(payload) {
   return `${payload}.${sign(payload)}`;
 }
@@ -82,11 +142,13 @@ function secureCookieAttribute() {
 
 export function createSessionCookie(user = {}) {
   const expiresAt = Date.now() + SESSION_MAX_AGE_SECONDS * 1000;
+  const role = String(user.role || "operator").trim() || "operator";
   const payload = base64url(
     JSON.stringify({
       sub: "operator",
       provider: "token",
       ...user,
+      role,
       expiresAt,
     }),
   );
@@ -100,9 +162,39 @@ export function clearSessionCookie() {
   return `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`;
 }
 
-export function createOAuthStateCookie(state) {
+export function normalizeManageReturnTo(value) {
+  const candidate = String(value || "").trim();
+
+  if (!candidate) {
+    return "/";
+  }
+
+  if (
+    candidate.length > 2_048
+    || !candidate.startsWith("/")
+    || /^\/[\\/]/.test(candidate)
+    || /[\\\u0000-\u001f\u007f]/.test(candidate)
+  ) {
+    return "/";
+  }
+
+  try {
+    const base = new URL("https://manage.invalid");
+    const parsed = new URL(candidate, base);
+
+    if (parsed.origin !== base.origin || parsed.username || parsed.password) {
+      return "/";
+    }
+
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return "/";
+  }
+}
+
+export function createOAuthStateCookie(state, returnTo = "/") {
   const expiresAt = Date.now() + OAUTH_STATE_MAX_AGE_SECONDS * 1000;
-  const payload = base64url(JSON.stringify({ state, expiresAt }));
+  const payload = base64url(JSON.stringify({ state, returnTo: normalizeManageReturnTo(returnTo), expiresAt }));
   const token = signedPayload(payload);
   const secure = secureCookieAttribute();
 
@@ -114,10 +206,20 @@ export function clearOAuthStateCookie() {
 }
 
 export function hasValidOAuthState(req, state) {
+  return Boolean(readOAuthState(req, state));
+}
+
+export function readOAuthState(req, state) {
   const cookies = parseCookies(req);
   const parsed = parseSignedPayload(cookies[OAUTH_STATE_COOKIE]);
 
-  return Boolean(parsed && parsed.state === state && Number(parsed.expiresAt) > Date.now());
+  if (!parsed || parsed.state !== state || Number(parsed.expiresAt) <= Date.now()) {
+    return null;
+  }
+
+  return {
+    returnTo: normalizeManageReturnTo(parsed.returnTo),
+  };
 }
 
 export function getCookieSession(req) {
@@ -142,6 +244,7 @@ export function getCookieSession(req) {
       name: parsed.name || "",
       avatarUrl: parsed.avatarUrl || "",
       provider: parsed.provider || "token",
+      role: parsed.role || "operator",
     },
   };
 }
@@ -155,7 +258,13 @@ export function hasValidBearer(req) {
   }
 
   const supplied = Buffer.from(match[1]);
-  const expected = Buffer.from(getAccessToken());
+  const accessToken = getAccessToken();
+
+  if (!accessToken) {
+    return false;
+  }
+
+  const expected = Buffer.from(accessToken);
 
   if (supplied.length !== expected.length) {
     return false;
@@ -173,13 +282,14 @@ export function getSession(req) {
 
   if (hasValidBearer(req)) {
     return {
-      mode: getAccessToken() === "manage-local" ? "local" : "token",
+      mode: getAccessToken() === LOCAL_AGENT_TOKEN ? "local" : "token",
       user: {
         sub: "bearer-token",
         login: "Bearer token",
         name: "",
         avatarUrl: "",
         provider: "token",
+        role: "agent",
       },
     };
   }

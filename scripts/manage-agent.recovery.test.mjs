@@ -21,10 +21,13 @@ describe("lifecycle CLI recovery commands", () => {
     expect(result.stdout).toContain("extend <KEY>");
     expect(result.stdout).toContain("reclaim <KEY>");
     expect(result.stdout).toContain("release <KEY>");
+    expect(result.stdout).toContain("doctor");
+    expect(result.stdout).toContain("create");
+    expect(result.stdout).toContain("next-key");
     expect(result.stdout).toContain("http://127.0.0.1:5186");
     expect(result.stdout).toContain("MANAGE_AUTH_TOKEN");
     expect(result.stdout).toContain("TASK-113");
-    expect(result.stdout).not.toMatch(/commercestreet|csc-crm-io|CSC-|gcloud|origin\/master/i);
+    expect(result.stdout).not.toMatch(/commercestreet|csc-crm-io|CSC-|gcloud|origin\/master|update csc-workspace/i);
   });
 
   it("dry-runs extend against the local recovery route", () => {

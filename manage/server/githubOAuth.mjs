@@ -4,7 +4,7 @@ import {
   createOAuthStateCookie,
   createSessionCookie,
   getGithubOAuthStatus,
-  hasValidOAuthState,
+  readOAuthState,
 } from "./auth.mjs";
 
 function getBaseUrl(baseUrl) {
@@ -28,7 +28,7 @@ function requireGithubOAuthConfig() {
   return status;
 }
 
-export function getGithubLoginStart(baseUrl) {
+export function getGithubLoginStart(baseUrl, returnTo = "/") {
   requireGithubOAuthConfig();
 
   const state = crypto.randomBytes(24).toString("base64url");
@@ -41,7 +41,7 @@ export function getGithubLoginStart(baseUrl) {
 
   return {
     url: url.toString(),
-    cookie: createOAuthStateCookie(state),
+    cookie: createOAuthStateCookie(state, returnTo),
   };
 }
 
@@ -98,11 +98,16 @@ async function fetchGithubUser(accessToken) {
   });
 }
 
-function authorizeGithubUser(user, allowedLogins) {
-  const login = String(user?.login || "").toLowerCase();
+export function authorizeGithubUser(user, allowedLogins) {
+  const login = String(user?.login || "").trim().toLowerCase();
+  const allowed = new Set(
+    (Array.isArray(allowedLogins) ? allowedLogins : [])
+      .map((allowedLogin) => String(allowedLogin || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
 
-  if (!login || !allowedLogins.includes(login)) {
-    throw Object.assign(new Error("GitHub account is not allowed to access Manage"), { statusCode: 403 });
+  if (!login || !allowed.has(login)) {
+    throw Object.assign(new Error("GitHub account is not allowed to access this console"), { statusCode: 403 });
   }
 }
 
@@ -117,7 +122,9 @@ export async function completeGithubLogin(req, url, baseUrl) {
     });
   }
 
-  if (!code || !state || !hasValidOAuthState(req, state)) {
+  const oauthState = code && state ? readOAuthState(req, state) : null;
+
+  if (!oauthState) {
     throw Object.assign(new Error("GitHub login state is invalid or expired"), { statusCode: 400 });
   }
 
@@ -134,6 +141,7 @@ export async function completeGithubLogin(req, url, baseUrl) {
       avatarUrl: githubUser.avatar_url || "",
     }),
     clearStateCookie: clearOAuthStateCookie(),
+    returnTo: oauthState.returnTo,
     user: {
       login: githubUser.login,
       name: githubUser.name || "",

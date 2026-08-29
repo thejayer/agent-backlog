@@ -1,11 +1,26 @@
-import { expect, test } from "@playwright/test";
+import { expect, request as playwrightRequest, test } from "@playwright/test";
 
-test.beforeEach(async ({ page }) => {
-  await page.request.post("/api/agent/reset");
+const manageAuthToken = process.env.MANAGE_PLAYWRIGHT_AUTH_TOKEN || "manage-playwright-local-agent-token";
+const manageOperatorToken = process.env.MANAGE_PLAYWRIGHT_OPERATOR_TOKEN || "manage-playwright-local-operator-token";
+
+test.beforeEach(async ({ page, request }) => {
+  await Promise.all([
+    page.request.post("/api/auth/login", { data: { token: manageOperatorToken } }),
+    request.post("/api/auth/login", { data: { token: manageOperatorToken } }),
+  ]);
+  const reset = await page.request.post("/api/agent/reset", {
+    headers: { "x-csrf-protection": "1" },
+    data: { confirmation: "RESET MANAGE" },
+  });
+  expect(reset.ok(), "setup reset").toBe(true);
 });
 
 test.afterEach(async ({ page }) => {
-  await page.request.post("/api/agent/reset");
+  const reset = await page.request.post("/api/agent/reset", {
+    headers: { "x-csrf-protection": "1" },
+    data: { confirmation: "RESET MANAGE" },
+  });
+  expect(reset.ok(), "teardown reset").toBe(true);
 });
 
 test("renders backlog and agent prompt", async ({ page }) => {
@@ -45,7 +60,7 @@ test("renders backlog and agent prompt", async ({ page }) => {
   await expect(page.getByLabel("Selected task URL")).toContainText("http://127.0.0.1:5186/agent/TASK-101.md");
   await expect(page.locator(".work-list")).toContainText("#data-quality");
   await expect(page.getByLabel("System status")).toContainText("File store");
-  await expect(page.getByLabel("System status")).toContainText("Bearer on");
+  await expect(page.getByLabel("System status")).toContainText("Break-glass on");
   await expect(page.locator(".endpoint-list").getByText("Task URL", { exact: true })).toBeVisible();
   await expect(page.locator(".endpoint-list").getByText("/agent/instructions.md", { exact: true })).toBeVisible();
   await expect(page.locator(".endpoint-list").getByText("/api/agent/bootstrap", { exact: true })).toBeVisible();
@@ -432,6 +447,13 @@ test("routes shell navigation to focused workspaces", async ({ page }) => {
 });
 
 test("exposes deployment health and auth provider config", async ({ playwright, request }) => {
+  const authenticatedSession = await request.get("/api/auth/session");
+  expect(authenticatedSession.ok()).toBe(true);
+  await expect(await authenticatedSession.json()).toMatchObject({
+    authenticated: true,
+    mode: "cookie",
+  });
+
   const anonymous = await playwright.request.newContext({
     baseURL: "http://127.0.0.1:5186",
     extraHTTPHeaders: {
@@ -453,6 +475,12 @@ test("exposes deployment health and auth provider config", async ({ playwright, 
   expect(anonymousSessionPayload.authenticated).toBe(false);
   expect(anonymousSessionPayload.providers.token).toBe(true);
   expect(anonymousSessionPayload.providers.github).toBe(false);
+
+  const agentLogin = await anonymous.post("/api/auth/login", {
+    data: { token: manageAuthToken },
+    failOnStatusCode: false,
+  });
+  expect(agentLogin.status()).toBe(401);
 
   const githubStart = await anonymous.get("/api/auth/github/start", {
     failOnStatusCode: false,
@@ -679,4 +707,75 @@ test("lets agents claim packets and write structured status back", async ({ page
   await expect(page.locator(".detail-panel")).toContainText("npm.cmd test");
   await expect(page.locator(".detail-panel")).toContainText("web-app/src/lib/contactMatcher.js");
   await expect(page.locator(".detail-panel")).toContainText("Reviewer should inspect duplicate merge counts.");
+});
+
+test("enforces agent least privilege and browser write protection", async ({ baseURL }) => {
+  expect(baseURL).toBeTruthy();
+  const origin = new URL(baseURL).origin;
+  const agent = await playwrightRequest.newContext({
+    baseURL,
+    extraHTTPHeaders: { Authorization: `Bearer ${manageAuthToken}` },
+  });
+
+  try {
+    expect((await agent.get("/api/agent/bootstrap")).status()).toBe(200);
+    expect((await agent.get("/api/agent/next")).status()).toBe(200);
+    expect((await agent.get("/api/agent/next-key")).status()).toBe(200);
+    const created = await agent.post("/api/agent/tasks", {
+      data: {
+        title: "Agent-created lifecycle packet",
+        summary: "Exercise the least-privilege packet creation endpoint.",
+        desiredOutcome: "The lifecycle CLI remains usable without operator workspace access.",
+        repo: "web-app",
+      },
+    });
+    expect(created.status()).toBe(201);
+    const createdPayload = await created.json();
+    expect(createdPayload.workItem.key).toMatch(/^TASK-\d+$/);
+    expect(createdPayload.workItem.status).toBe("draft");
+
+    for (const [method, path, data] of [
+      ["post", "/api/agent/reset", { confirmation: "RESET MANAGE" }],
+      ["post", "/api/backups", { reason: "agent-denied" }],
+      ["post", "/api/github/sync", { mock: true }],
+      ["get", "/api/work-items", undefined],
+    ]) {
+      const response = await agent[method](path, { data, failOnStatusCode: false });
+      expect(response.status(), `${method.toUpperCase()} ${path}`).toBe(403);
+    }
+  } finally {
+    await agent.dispose();
+  }
+
+  const browser = await playwrightRequest.newContext({
+    baseURL,
+    extraHTTPHeaders: { "x-csrf-protection": "0" },
+  });
+
+  try {
+    const login = await browser.post("/api/auth/login", { data: { token: manageOperatorToken } });
+    expect(login.ok()).toBe(true);
+
+    const missingProtection = await browser.post("/api/backups", {
+      data: { reason: "missing-csrf" },
+      headers: { Origin: "null" },
+      failOnStatusCode: false,
+    });
+    expect(missingProtection.status()).toBe(403);
+
+    const hostileOrigin = await browser.post("/api/backups", {
+      data: { reason: "hostile-origin" },
+      headers: { Origin: "https://evil.example" },
+      failOnStatusCode: false,
+    });
+    expect(hostileOrigin.status()).toBe(403);
+
+    const sameOrigin = await browser.post("/api/backups", {
+      data: { reason: "same-origin" },
+      headers: { Origin: origin },
+    });
+    expect(sameOrigin.status()).toBe(201);
+  } finally {
+    await browser.dispose();
+  }
 });

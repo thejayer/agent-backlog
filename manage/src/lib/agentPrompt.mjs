@@ -596,6 +596,13 @@ npm run manage:agent -- progress TASK-### --note "Implementation started"
 npm run manage:agent -- validate --cmd "npm.cmd test" --cmd "npm.cmd run build"
 npm run manage:agent -- review TASK-### --branch codex/task-###-short-name --pr https://github.com/your-org/repo/pull/123 --test "npm.cmd test - passed" --file path/to/file
 npm run manage:agent -- closeout TASK-### --repo your-org/repo --pr 123
+\`\`\`
+
+Recover a stuck claim:
+\`\`\`bash
+npm run manage:agent -- extend TASK-### --lease-minutes 60
+npm run manage:agent -- reclaim TASK-###
+npm run manage:agent -- release TASK-###
 \`\`\``;
 }
 
@@ -638,6 +645,7 @@ export function buildAgentBootstrap({
     taskMarkdown: endpoint(baseUrl, "/agent/{key}.md"),
     claim: endpoint(baseUrl, "/api/agent/tasks/{key}/claim"),
     status: endpoint(baseUrl, "/api/agent/tasks/{key}/status"),
+    recovery: endpoint(baseUrl, "/api/agent/tasks/{key}/recovery"),
   };
 
   return {

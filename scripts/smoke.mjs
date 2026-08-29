@@ -79,6 +79,52 @@ try {
   const conflict = await authed("/api/agent/tasks/TASK-101/claim", { method: "POST", body: JSON.stringify({ agent: "Claude Code" }) });
   check("second claim is rejected (409)", conflict.status === 409);
 
+  check("claimed packet exposes run health", claimBody.workItem?.agentRunHealth?.state === "healthy");
+  check("healthy run offers extend and release", Array.isArray(claimBody.workItem?.agentRunHealth?.actions) && claimBody.workItem.agentRunHealth.actions.some((action) => action.id === "extend"));
+
+  const reclaimWhileHealthy = await authed("/api/agent/tasks/TASK-101/recovery", {
+    method: "POST",
+    body: JSON.stringify({ action: "reclaim", agentRunId: claimBody.workItem.agentRunId }),
+  });
+  check("reclaim on a healthy run is rejected (409)", reclaimWhileHealthy.status === 409);
+
+  const missingRunId = await authed("/api/agent/tasks/TASK-101/recovery", {
+    method: "POST",
+    body: JSON.stringify({ action: "extend" }),
+  });
+  check("recovery without observed run id is rejected (400)", missingRunId.status === 400);
+
+  const extended = await authed("/api/agent/tasks/TASK-101/recovery", {
+    method: "POST",
+    body: JSON.stringify({ action: "extend", agent: "Codex", agentRunId: claimBody.workItem.agentRunId, leaseMinutes: 30 }),
+  });
+  const extendedBody = await extended.json();
+  check("extend returns 200 and keeps the claim", extended.status === 200 && extendedBody.workItem?.status === "claimed");
+  check("extend appends a recovery event", extendedBody.workItem?.agentEvents?.at(-1)?.action === "extend");
+  check("extend keeps the same run id", extendedBody.workItem?.agentRunId === claimBody.workItem.agentRunId);
+
+  const released = await authed("/api/agent/tasks/TASK-101/recovery", {
+    method: "POST",
+    body: JSON.stringify({ action: "release", agentRunId: extendedBody.workItem.agentRunId }),
+  });
+  const releasedBody = await released.json();
+  check("release returns the packet to ready", released.status === 200 && releasedBody.workItem?.status === "ready_for_agent");
+  check("release clears the lease", !releasedBody.workItem?.leaseExpiresAt && !releasedBody.workItem?.claimedBy);
+
+  const reclaimedSetup = await authed("/api/agent/tasks/TASK-101/claim", { method: "POST", body: JSON.stringify({ agent: "Codex", leaseMinutes: 30 }) });
+  const reclaimedSetupBody = await reclaimedSetup.json();
+  await authed("/api/work-items/TASK-101", {
+    method: "PATCH",
+    body: JSON.stringify({ leaseExpiresAt: "2020-01-01T00:00:00.000Z" }),
+  });
+  const reclaimed = await authed("/api/agent/tasks/TASK-101/recovery", {
+    method: "POST",
+    body: JSON.stringify({ action: "reclaim", agent: "Claude Code", agentRunId: reclaimedSetupBody.workItem.agentRunId }),
+  });
+  const reclaimedBody = await reclaimed.json();
+  check("reclaim takes over a stale lease", reclaimed.status === 200 && reclaimedBody.workItem?.claimedBy === "Claude Code");
+  check("reclaim issues a new run id", Boolean(reclaimedBody.workItem?.agentRunId) && reclaimedBody.workItem.agentRunId !== reclaimedSetupBody.workItem.agentRunId);
+
   const status = await authed("/api/agent/tasks/TASK-101/status", {
     method: "POST",
     body: JSON.stringify({ status: "needs_review", agent: "Codex", note: "Opened a PR.", githubPrUrl: "https://github.com/your-org/web-app/pull/1" }),

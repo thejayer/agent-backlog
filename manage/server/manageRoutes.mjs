@@ -14,6 +14,7 @@ import {
   listWorkItems,
   patchWorkItem,
   recordGithubIssue,
+  recoverAgentRun,
   resetWorkItems,
   updateTaskStatus,
 } from "./workStore.mjs";
@@ -84,6 +85,7 @@ function taskLinks(baseUrl, workItem) {
     json: `${root}/api/agent/tasks/${key}`,
     claim: `${root}/api/agent/tasks/${key}/claim`,
     status: `${root}/api/agent/tasks/${key}/status`,
+    recovery: `${root}/api/agent/tasks/${key}/recovery`,
   };
 }
 
@@ -600,6 +602,26 @@ async function handleRoute(req, res, baseUrl) {
 
     const result = await claimWorkItem(decodeURIComponent(claimMatch[1]), await readJsonBody(req));
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
+    return true;
+  }
+
+  const recoveryMatch = pathname.match(/^\/api\/agent\/tasks\/([^/]+)\/recovery$/);
+  if (recoveryMatch) {
+    if (method !== "POST") {
+      methodAllowed(res, ["POST"]);
+      return true;
+    }
+
+    const key = decodeURIComponent(recoveryMatch[1]);
+    const body = await readJsonBody(req);
+    const session = getSession(req);
+    const actor = session?.user?.login || session?.user?.name || body.agent || "Operator";
+    const result = await recoverAgentRun(key, body, { actor });
+    sendJson(res, 200, {
+      ...withPrompt(result.workItem, baseUrl),
+      action: result.action,
+      workItems: result.workItems,
+    });
     return true;
   }
 

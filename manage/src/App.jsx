@@ -33,6 +33,7 @@ import {
   login as loginRequest,
   logout as logoutRequest,
   restoreBackup as restoreBackupRequest,
+  recoverAgentRun as recoverAgentRunRequest,
   resetWorkItems as resetWorkItemsRequest,
   syncGithub,
   updateWorkItem,
@@ -350,6 +351,10 @@ function formatEventType(type) {
     return "Status update";
   }
 
+  if (type === "recovery") {
+    return "Recovery action";
+  }
+
   return type || "Event";
 }
 
@@ -370,6 +375,13 @@ function formatAgentEventLabel(event) {
     if (event.status === "in_progress" || event.status === "claimed") {
       return "Progress update";
     }
+  }
+
+  if (event?.type === "recovery") {
+    if (event.action === "extend") return "Extended lease";
+    if (event.action === "reclaim") return "Reclaimed";
+    if (event.action === "release") return "Released";
+    return "Recovery action";
   }
 
   return formatEventType(event?.type);
@@ -482,6 +494,12 @@ function isLeaseActive(item) {
 
 function isAgentWorkInMotion(item) {
   return item?.status === "claimed" || item?.status === "in_progress";
+}
+
+function isAgentRunVisible(item) {
+  return item?.agentRunHealth?.state
+    ? item.agentRunHealth.state !== "idle"
+    : isAgentWorkInMotion(item);
 }
 
 function leaseSummary(item) {
@@ -924,7 +942,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     return { totalCount, readyCount, inProgressCount, reviewCount, blockedCount, avgReadiness };
   }, [items]);
 
-  const activeClaims = useMemo(() => items.filter(isAgentWorkInMotion), [items]);
+  const activeClaims = useMemo(() => items.filter(isAgentRunVisible), [items]);
 
   const repoAlertCount = useMemo(() => {
     const githubByRepo = new Map((githubCache?.repos || []).map((repo) => [repo.id, repo]));
@@ -1122,6 +1140,33 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
 
   async function claimSelected() {
     await claimPacket(selectedItem);
+  }
+
+  async function recoverRun(item, action) {
+    if (!item || action === "open_context") {
+      return;
+    }
+
+    setSyncState("saving");
+    setSyncMessage(`${action[0].toUpperCase()}${action.slice(1)} ${item.key}`);
+
+    try {
+      const payload = await recoverAgentRunRequest(item.key, {
+        action,
+        agent: item.claimedBy || item.agent || "Codex",
+        agentRunId: item.agentRunId || "",
+      });
+      if (payload.workItems) {
+        setItems(payload.workItems);
+      } else {
+        replaceWorkItem(payload.workItem);
+      }
+      setSyncState("synced");
+      setSyncMessage(`${action[0].toUpperCase()}${action.slice(1)}d ${payload.workItem.key}`);
+    } catch (error) {
+      setSyncState("failed");
+      setSyncMessage(error.message);
+    }
   }
 
   async function linkSelectedGithub() {
@@ -1706,6 +1751,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
               <Endpoint label="Next claim" value="POST /api/agent/next/claim" />
               <Endpoint label="Claim" value={`POST /api/agent/tasks/${selectedItem.key}/claim`} />
               <Endpoint label="Status" value={`POST /api/agent/tasks/${selectedItem.key}/status`} />
+              <Endpoint label="Recovery" value={`POST /api/agent/tasks/${selectedItem.key}/recovery`} />
             </div>
           </aside>
         </section>
@@ -1749,7 +1795,9 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
           </>
         ) : null}
 
-        {activeNav === "agents" ? <AgentsOverview items={items} activeClaims={activeClaims} onOpenPacket={openPacket} /> : null}
+        {activeNav === "agents" ? (
+          <AgentsOverview items={items} activeClaims={activeClaims} onOpenPacket={openPacket} onRecoverRun={recoverRun} />
+        ) : null}
       </main>
 
       {showComposer && <Composer onClose={() => setShowComposer(false)} onCreate={createWorkItem} />}
@@ -2005,7 +2053,7 @@ function ReviewList({ label, items }) {
   );
 }
 
-function AgentsOverview({ items, activeClaims, onOpenPacket }) {
+function AgentsOverview({ items, activeClaims, onOpenPacket, onRecoverRun }) {
   const roster = ["Codex", "Claude Code"].map((agent) => ({
     agent,
     active: activeClaims.filter((item) => item.claimedBy === agent || (item.agent === agent && item.status !== "done")).length,
@@ -2027,7 +2075,7 @@ function AgentsOverview({ items, activeClaims, onOpenPacket }) {
         ) : (
           <div className="agent-claims">
             {activeClaims.map((item) => (
-              <AgentClaimCard key={item.key} item={item} onOpenPacket={onOpenPacket} />
+              <AgentClaimCard key={item.key} item={item} onOpenPacket={onOpenPacket} onRecoverRun={onRecoverRun} />
             ))}
           </div>
         )}
@@ -2069,9 +2117,10 @@ function AgentsOverview({ items, activeClaims, onOpenPacket }) {
   );
 }
 
-function AgentClaimCard({ item, onOpenPacket }) {
+function AgentClaimCard({ item, onOpenPacket, onRecoverRun }) {
   const leasePct = leaseProgress(item);
   const lease = leaseSummary(item);
+  const health = item.agentRunHealth;
 
   return (
     <article className="claim-card">
@@ -2080,10 +2129,13 @@ function AgentClaimCard({ item, onOpenPacket }) {
           <div className="claim-row-key">{item.key}</div>
           <h3>{item.title}</h3>
         </div>
-        <span className="claim-agent">
-          <span className="ca-avatar">{agentInitials(item.claimedBy || item.agent || "Agent")}</span>
-          {item.claimedBy || item.agent || "Unassigned"}
-        </span>
+        <div className="claim-head-side">
+          {health ? <RunHealthBadge health={health} /> : null}
+          <span className="claim-agent">
+            <span className="ca-avatar">{agentInitials(item.claimedBy || item.agent || "Agent")}</span>
+            {item.claimedBy || item.agent || "Unassigned"}
+          </span>
+        </div>
       </div>
 
       <div className="claim-meta">
@@ -2114,14 +2166,62 @@ function AgentClaimCard({ item, onOpenPacket }) {
       </div>
 
       {item.lastAgentUpdate?.note ? <p className="agent-note">{item.lastAgentUpdate.note}</p> : null}
+      {health?.summary ? <p className="agent-note">{health.summary}</p> : null}
 
       <div className="claim-foot">
         {item.githubBranch ? <code>{item.githubBranch}</code> : <span className="detail-note">No branch linked</span>}
-        <button type="button" className="button secondary" onClick={() => onOpenPacket(item.key)}>
-          Open packet
-        </button>
+        <div className="claim-actions">
+          <RecoveryActions item={item} onRecoverRun={onRecoverRun} />
+          <button type="button" className="button secondary" onClick={() => onOpenPacket(item.key)}>
+            Open packet
+          </button>
+        </div>
       </div>
     </article>
+  );
+}
+
+function RunHealthBadge({ health }) {
+  if (!health) {
+    return null;
+  }
+
+  return (
+    <span className={`run-health run-health-${health.severity || "none"}`}>{health.label}</span>
+  );
+}
+
+function RecoveryActions({ item, onRecoverRun }) {
+  const actions = item?.agentRunHealth?.actions || [];
+
+  if (actions.length === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      {actions.map((action) => {
+        if (action.id === "open_context") {
+          const href = item.agentRunHealth?.context?.contextUrl;
+          return href ? (
+            <a key={action.id} className="button secondary" href={href} target="_blank" rel="noreferrer">
+              {action.label}
+            </a>
+          ) : null;
+        }
+
+        return (
+          <button
+            key={action.id}
+            type="button"
+            className={`button ${action.tone === "danger" ? "danger" : "secondary"}`}
+            onClick={() => onRecoverRun?.(item, action.id)}
+          >
+            {action.label}
+          </button>
+        );
+      })}
+    </>
   );
 }
 
@@ -2379,7 +2479,7 @@ function WorkPacketDetail({
           </div>
         </Section>
 
-        {item.claimedBy || item.agentRunId || item.leaseExpiresAt ? (
+        {item.claimedBy || item.agentRunId || item.leaseExpiresAt || item.agentRunHealth?.state === "failed" ? (
           <Section title="Agent run">
             <div className="run-card">
               <div>
@@ -2399,6 +2499,12 @@ function WorkPacketDetail({
                 <strong>{formatDateTime(item.leaseExpiresAt)}</strong>
               </div>
             </div>
+            {item.agentRunHealth ? (
+              <div className="run-health-detail">
+                <RunHealthBadge health={item.agentRunHealth} />
+                <p className="detail-note">{item.agentRunHealth.summary}</p>
+              </div>
+            ) : null}
           </Section>
         ) : null}
 
@@ -2541,6 +2647,7 @@ function AgentEventCard({ event }) {
         {event.status ? <StatusPill status={event.status} /> : null}
       </div>
       {event.agentRunId ? <code>{event.agentRunId}</code> : null}
+      {event.action ? <p className="detail-note">{formatAgentEventLabel(event)}</p> : null}
       {event.note ? <p>{event.note}</p> : null}
       {event.leaseExpiresAt ? <p className="detail-note">Lease expires {formatDateTime(event.leaseExpiresAt)}.</p> : null}
       <StructuredAgentUpdate update={event} />

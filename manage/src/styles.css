@@ -608,6 +608,17 @@ textarea:focus-visible {
   background: var(--manage-hover);
 }
 
+.button.danger {
+  border-color: color-mix(in srgb, var(--manage-red) 36%, var(--manage-border));
+  background: color-mix(in srgb, var(--manage-red) 10%, var(--manage-surface));
+  color: var(--manage-red);
+}
+
+.button.danger:hover {
+  border-color: var(--manage-red);
+  background: color-mix(in srgb, var(--manage-red) 16%, var(--manage-surface));
+}
+
 .icon-button {
   width: 36px;
   height: 36px;
@@ -1323,6 +1334,67 @@ textarea:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: var(--manage-gap-tight);
+}
+
+.claim-head-side {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.claim-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.run-health {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--manage-border);
+  border-radius: 999px;
+  background: var(--manage-surface);
+  color: var(--manage-muted);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.run-health-success {
+  border-color: color-mix(in srgb, var(--manage-green) 40%, var(--manage-border));
+  background: color-mix(in srgb, var(--manage-green) 12%, var(--manage-surface));
+  color: var(--manage-green);
+}
+
+.run-health-warning {
+  border-color: color-mix(in srgb, var(--manage-yellow) 40%, var(--manage-border));
+  background: color-mix(in srgb, var(--manage-yellow) 12%, var(--manage-surface));
+  color: var(--manage-yellow);
+}
+
+.run-health-high {
+  border-color: color-mix(in srgb, var(--manage-rust) 40%, var(--manage-border));
+  background: color-mix(in srgb, var(--manage-rust) 12%, var(--manage-surface));
+  color: var(--manage-rust);
+}
+
+.run-health-critical {
+  border-color: color-mix(in srgb, var(--manage-red) 40%, var(--manage-border));
+  background: color-mix(in srgb, var(--manage-red) 12%, var(--manage-surface));
+  color: var(--manage-red);
+}
+
+.run-health-detail {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .claim-row {

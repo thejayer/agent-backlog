@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { priorityOptions, statusOptions, workItems as seedWorkItems } from "../src/data/workItems.mjs";
+import { AGENT_RUN_EXTEND_LEASE_MINUTES } from "../src/lib/agentRunContract.mjs";
+import { deriveAgentRunHealth, isLeaseActive, normalizeLeaseMinutes } from "./agentRunHealth.mjs";
 import { readJsonState, writeJsonState } from "./storage.mjs";
 
 const allowedStatuses = new Set(statusOptions.map((status) => status.id));
 const allowedPriorities = new Set(priorityOptions.map((priority) => priority.id));
 const seedLabelsByKey = new Map(seedWorkItems.map((item) => [item.key, item.labels || []]));
-const leasedStatuses = new Set(["claimed", "in_progress"]);
 const completedStatuses = new Set(["needs_review", "done", "blocked"]);
-const defaultLeaseMinutes = 90;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -66,27 +66,8 @@ function normalizeAgentName(payload = {}, fallback = "Unspecified agent") {
   return String(payload.claimedBy || payload.agent || fallback).trim() || fallback;
 }
 
-function normalizeLeaseMinutes(value) {
-  const minutes = Number(value);
-
-  if (!Number.isFinite(minutes) || minutes <= 0) {
-    return defaultLeaseMinutes;
-  }
-
-  return Math.min(Math.max(Math.round(minutes), 5), 8 * 60);
-}
-
 function buildAgentRunId(key) {
   return `${key}-${Date.now()}-${randomUUID().slice(0, 8)}`;
-}
-
-function isLeaseActive(item, now = new Date()) {
-  if (!leasedStatuses.has(item.status) || !item.leaseExpiresAt) {
-    return false;
-  }
-
-  const expiresAt = Date.parse(item.leaseExpiresAt);
-  return Number.isFinite(expiresAt) && expiresAt > now.getTime();
 }
 
 function appendAgentEvent(item, event) {
@@ -124,8 +105,16 @@ function normalizeWorkItem(item) {
   };
 }
 
-function publicWorkItems(items) {
-  return items.map((item) => normalizeWorkItem(item));
+function publicWorkItem(item, now = new Date()) {
+  const normalized = normalizeWorkItem(item);
+  return {
+    ...normalized,
+    agentRunHealth: deriveAgentRunHealth(normalized, now),
+  };
+}
+
+function publicWorkItems(items, now = new Date()) {
+  return items.map((item) => publicWorkItem(item, now));
 }
 
 async function writeWorkItems(items) {
@@ -206,7 +195,7 @@ export async function createWorkItem(payload) {
   await writeWorkItems(nextItems);
 
   return {
-    workItem,
+    workItem: publicWorkItem(workItem),
     workItems: publicWorkItems(nextItems),
   };
 }
@@ -288,7 +277,7 @@ export async function patchWorkItem(key, updates) {
   await writeWorkItems(nextItems);
 
   return {
-    workItem: nextItem,
+    workItem: publicWorkItem(nextItem),
     workItems: publicWorkItems(nextItems),
   };
 }
@@ -304,6 +293,10 @@ export async function claimWorkItem(key, payload = {}) {
 
   const currentItem = items[index];
   const now = new Date();
+
+  if (Object.prototype.hasOwnProperty.call(payload, "expectedAgentRunId")) {
+    assertExpectedAgentRunId(currentItem, payload.expectedAgentRunId);
+  }
 
   if (isLeaseActive(currentItem, now) && !payload.force) {
     throw Object.assign(
@@ -352,7 +345,165 @@ export async function claimWorkItem(key, payload = {}) {
   await writeWorkItems(nextItems);
 
   return {
-    workItem: nextItem,
+    workItem: publicWorkItem(nextItem),
+    workItems: publicWorkItems(nextItems),
+  };
+}
+
+function assertExpectedAgentRunId(currentItem, expectedAgentRunId) {
+  const expected = String(expectedAgentRunId || "").trim();
+  const current = String(currentItem.agentRunId || "").trim();
+
+  if (expected !== current) {
+    throw Object.assign(
+      new Error("The agent run changed before recovery. Refresh the board and try again."),
+      { statusCode: 409 },
+    );
+  }
+}
+
+function assertObservedAgentRun(currentItem, payload) {
+  if (!Object.prototype.hasOwnProperty.call(payload || {}, "agentRunId")) {
+    throw Object.assign(new Error("The observed agent run ID is required for recovery actions"), { statusCode: 400 });
+  }
+
+  assertExpectedAgentRunId(currentItem, payload.agentRunId);
+}
+
+async function readObservedRecoveryItem(key, payload) {
+  const items = await readWorkItems();
+  const normalizedKey = String(key || "").toUpperCase();
+  const index = items.findIndex((item) => item.key === normalizedKey);
+
+  if (index === -1) {
+    throw Object.assign(new Error("Work packet not found"), { statusCode: 404 });
+  }
+
+  const currentItem = items[index];
+  const now = new Date();
+  const action = String(payload.action || "").trim().toLowerCase();
+  assertObservedAgentRun(currentItem, payload);
+  const health = deriveAgentRunHealth(currentItem, now);
+  const allowedActions = new Set(health.actions.map((candidate) => candidate.id));
+
+  if (!allowedActions.has(action)) {
+    throw Object.assign(
+      new Error(`${action} is not available while the agent run is ${health.state}`),
+      { statusCode: 409 },
+    );
+  }
+
+  return { items, index, currentItem, now, health };
+}
+
+function recoveryActor(payload = {}, authenticatedActor = "") {
+  return String(authenticatedActor || payload.agent || payload.claimedBy || "Operator").trim() || "Operator";
+}
+
+export async function recoverAgentRun(key, payload = {}, { actor: authenticatedActor } = {}) {
+  const action = String(payload.action || "").trim().toLowerCase();
+
+  if (!["release", "reclaim", "extend"].includes(action)) {
+    throw Object.assign(new Error("Recovery action must be release, reclaim, or extend"), { statusCode: 400 });
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(payload || {}, "agentRunId")) {
+    throw Object.assign(new Error("The observed agent run ID is required for recovery actions"), { statusCode: 400 });
+  }
+
+  if (action === "reclaim") {
+    const preview = await readObservedRecoveryItem(key, { ...payload, action });
+    const previousRunId = String(preview.currentItem.agentRunId || "").trim() || "missing run context";
+    const result = await claimWorkItem(key, {
+      agent: payload.agent || preview.currentItem.claimedBy || preview.currentItem.agent || "Operator",
+      claimedBy: payload.agent || preview.currentItem.claimedBy || preview.currentItem.agent || "Operator",
+      leaseMinutes: payload.leaseMinutes,
+      force: true,
+      expectedAgentRunId: payload.agentRunId,
+      note: String(payload.note || `Reclaimed from ${previousRunId}.`).trim(),
+    });
+    return { action, ...result };
+  }
+
+  const { items, index, currentItem, now } = await readObservedRecoveryItem(key, { ...payload, action });
+  const at = now.toISOString();
+  const note = String(payload.note || "").trim();
+  const actor = recoveryActor(payload, authenticatedActor);
+
+  if (action === "extend") {
+    const leaseMinutes = normalizeLeaseMinutes(payload.leaseMinutes || AGENT_RUN_EXTEND_LEASE_MINUTES);
+    const currentExpiry = Date.parse(currentItem.leaseExpiresAt || "");
+    const extendedFrom = Number.isFinite(currentExpiry) && currentExpiry > now.getTime() ? currentExpiry : now.getTime();
+    const leaseExpiresAt = new Date(extendedFrom + leaseMinutes * 60_000).toISOString();
+    const recoveryNote = note || `Extended the lease by ${leaseMinutes} minutes.`;
+    const event = {
+      type: "recovery",
+      action,
+      at,
+      agent: actor,
+      agentRunId: currentItem.agentRunId || "",
+      leaseExpiresAt,
+      note: recoveryNote,
+    };
+    const nextItem = {
+      ...currentItem,
+      leaseExpiresAt,
+      lastAgentUpdate: {
+        at,
+        agent: actor,
+        status: currentItem.status,
+        note: recoveryNote,
+        agentRunId: currentItem.agentRunId || "",
+      },
+      agentEvents: appendAgentEvent(currentItem, event),
+      updatedAt: at,
+    };
+    const nextItems = [...items];
+    nextItems[index] = nextItem;
+    await writeWorkItems(nextItems);
+
+    return {
+      action,
+      workItem: publicWorkItem(nextItem),
+      workItems: publicWorkItems(nextItems),
+    };
+  }
+
+  const previousRunId = currentItem.agentRunId || "";
+  const recoveryNote = note || `Released ${previousRunId || "incomplete agent run"}.`;
+  const event = {
+    type: "recovery",
+    action,
+    at,
+    agent: actor,
+    agentRunId: previousRunId,
+    note: recoveryNote,
+  };
+  const nextItem = {
+    ...currentItem,
+    status: "ready_for_agent",
+    claimedBy: "",
+    claimedAt: "",
+    agentRunId: "",
+    leaseExpiresAt: "",
+    blockedBy: "",
+    lastAgentUpdate: {
+      at,
+      agent: actor,
+      status: "ready_for_agent",
+      note: recoveryNote,
+      agentRunId: previousRunId,
+    },
+    agentEvents: appendAgentEvent(currentItem, event),
+    updatedAt: at,
+  };
+  const nextItems = [...items];
+  nextItems[index] = nextItem;
+  await writeWorkItems(nextItems);
+
+  return {
+    action,
+    workItem: publicWorkItem(nextItem),
     workItems: publicWorkItems(nextItems),
   };
 }
@@ -427,7 +578,7 @@ export async function updateTaskStatus(key, payload = {}) {
   await writeWorkItems(nextItems);
 
   return {
-    workItem: nextItem,
+    workItem: publicWorkItem(nextItem),
     workItems: publicWorkItems(nextItems),
   };
 }
@@ -464,7 +615,7 @@ export async function applyGithubMatches(key, matches = {}) {
   await writeWorkItems(nextItems);
 
   return {
-    workItem: nextItem,
+    workItem: publicWorkItem(nextItem),
     workItems: publicWorkItems(nextItems),
   };
 }
@@ -501,7 +652,7 @@ export async function recordGithubIssue(key, issue = {}) {
   await writeWorkItems(nextItems);
 
   return {
-    workItem: nextItem,
+    workItem: publicWorkItem(nextItem),
     workItems: publicWorkItems(nextItems),
   };
 }

@@ -98,6 +98,13 @@ export function claimNextWorkItem(payload = {}) {
   });
 }
 
+export function recoverAgentRun(key, payload = {}) {
+  return requestJson(`/api/agent/tasks/${encodeURIComponent(key)}/recovery`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function linkGithubWorkItem(key) {
   return requestJson(`/api/work-items/${encodeURIComponent(key)}/link-github`, {
     method: "POST",

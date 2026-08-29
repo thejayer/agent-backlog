@@ -2,6 +2,10 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
+import {
+  AGENT_RUN_EXTEND_LEASE_MINUTES,
+  AGENT_RUN_RECLAIM_LEASE_MINUTES,
+} from "../manage/src/lib/agentRunContract.mjs";
 
 const DEFAULT_BASE_URL = process.env.MANAGE_BASE_URL || "http://127.0.0.1:5186";
 const DEFAULT_AGENT = "Codex";
@@ -17,6 +21,9 @@ Usage:
 Commands:
   claim-next              Claim the next ready packet.
   claim <KEY>             Claim a specific packet.
+  extend <KEY>            Extend an active run lease.
+  reclaim <KEY>           Reclaim a stale, incomplete, or failed run.
+  release <KEY>           Release the observed run to the ready queue.
   progress <KEY>          Write status=in_progress.
   review <KEY>            Write status=needs_review.
   blocked <KEY>           Write status=blocked.
@@ -50,6 +57,9 @@ var named by --token-env). Set it before running write commands.
 
 Examples:
   npm run manage:agent -- claim-next --repo web-app
+  npm run manage:agent -- extend TASK-113 --lease-minutes 60
+  npm run manage:agent -- reclaim TASK-113
+  npm run manage:agent -- release TASK-113
   npm run manage:agent -- progress TASK-113 --note "Implementation started"
   npm run manage:agent -- review TASK-113 --branch codex/foo --pr https://github.com/your-org/web-app/pull/107 --test "npm test - passed" --file src/App.jsx
   npm run manage:agent -- closeout TASK-113 --repo your-org/web-app --pr 107
@@ -247,6 +257,7 @@ function print(label, payload, options = {}) {
   if (item) {
     console.log(`${label}: ${item.key} ${item.status}`);
     if (item.agentRunId) console.log(`Agent run ID: ${item.agentRunId}`);
+    if (item.agentRunHealth?.state) console.log(`Run health: ${item.agentRunHealth.state} — ${item.agentRunHealth.summary}`);
     if (item.githubPrUrl) console.log(`PR: ${item.githubPrUrl}`);
     if (payload.links?.markdown) console.log(`Packet: ${payload.links.markdown}`);
     return;
@@ -274,6 +285,21 @@ async function claim(positionals, options) {
   };
   const payload = await requestManage(`/api/agent/tasks/${encodeURIComponent(key)}/claim`, { method: "POST", body }, options);
   print("Claimed packet", payload, options);
+}
+
+async function recover(positionals, options, action) {
+  const key = taskKey(positionals);
+  const workItem = options.dryRun ? {} : await getTask(key, options);
+  const body = {
+    action,
+    agent: options.agent || process.env.MANAGE_AGENT || DEFAULT_AGENT,
+    agentRunId: options.agentRunId === undefined ? workItem.agentRunId || "" : String(options.agentRunId || "").trim(),
+    note: options.note || undefined,
+    ...(action === "extend" ? { leaseMinutes: numberOption(options.leaseMinutes, AGENT_RUN_EXTEND_LEASE_MINUTES) } : {}),
+    ...(action === "reclaim" ? { leaseMinutes: numberOption(options.leaseMinutes, AGENT_RUN_RECLAIM_LEASE_MINUTES) } : {}),
+  };
+  const payload = await requestManage(`/api/agent/tasks/${encodeURIComponent(key)}/recovery`, { method: "POST", body }, options);
+  print(`${action[0].toUpperCase()}${action.slice(1)} recovery`, payload, options);
 }
 
 async function writeStatus(positionals, options, explicitStatus) {
@@ -388,6 +414,9 @@ async function main() {
 
   if (command === "claim-next") return claimNext(options);
   if (command === "claim") return claim(positionals, options);
+  if (command === "extend") return recover(positionals, options, "extend");
+  if (command === "reclaim") return recover(positionals, options, "reclaim");
+  if (command === "release") return recover(positionals, options, "release");
   if (command === "progress") return writeStatus(positionals, options, "in_progress");
   if (command === "review") return writeStatus(positionals, options, "needs_review");
   if (command === "blocked") return writeStatus(positionals, options, "blocked");

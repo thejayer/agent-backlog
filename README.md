@@ -69,6 +69,9 @@ There's also a lifecycle CLI that wraps these calls:
 ```bash
 npm run agent -- claim-next --repo web-app
 npm run agent -- progress TASK-101 --note "Implementation started"
+npm run agent -- extend TASK-101 --lease-minutes 60
+npm run agent -- reclaim TASK-101
+npm run agent -- release TASK-101
 npm run agent -- review TASK-101 --branch codex/task-101-fix --pr https://github.com/your-org/web-app/pull/1
 npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies the merged PR via gh
 ```
@@ -82,6 +85,10 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
 - **Lease-based claiming** — `POST /api/agent/next/claim` (or `/tasks/{key}/claim`)
   marks a packet claimed for `leaseMinutes`. A second claim on a live lease gets
   `409`. Expired leases become available again automatically.
+- **Run health + recovery** — claimed and in-progress packets expose derived
+  `agentRunHealth` (`healthy`, `expiring`, `stale`, `incomplete`, `failed`, or
+  `idle`). Authenticated callers can `extend` the lease, `reclaim` a stuck run,
+  or `release` it back to `ready_for_agent` without waiting the lease out.
 - **Status writeback** — `POST /api/agent/tasks/{key}/status` records
   `needs_review` / `done` / `blocked` with branch, PR, tests run, files changed,
   blockers, and next steps, and appends to a per-packet event log.
@@ -103,6 +110,7 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
 | POST | `/api/agent/next/claim` | Claim the next ready packet |
 | POST | `/api/agent/tasks/{key}/claim` | Claim a specific packet |
 | POST | `/api/agent/tasks/{key}/status` | Write status back |
+| POST | `/api/agent/tasks/{key}/recovery` | Recover a run: `extend`, `reclaim`, or `release` |
 | GET | `/agent/{key}.md` | Packet as a Markdown prompt |
 | GET | `/agent/instructions.md` | Agent onboarding instructions |
 | GET | `/api/agent/bootstrap` | Machine-readable endpoint + command map |
@@ -147,6 +155,7 @@ The image builds the UI and serves UI + API from `manage/server.mjs` on `:8080`.
 ## Tests
 
 - `npm run smoke` — Node-only API smoke (no browser).
+- `npm run test:unit` — Vitest unit tests for run health, recovery, and the CLI.
 - `npm test` — Playwright UI + API suite (`npx playwright install chromium` first).
 
 ## License

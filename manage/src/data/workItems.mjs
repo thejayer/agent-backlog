@@ -66,6 +66,19 @@ export const repositories = [
   },
 ];
 
+export function configuredRepositorySlug(value) {
+  const repoId = String(value || "").trim();
+
+  if (!repoId) return "";
+  if (repoId.includes("/")) return repoId.replace(/^https?:\/\/github\.com\//, "").replace(/\/+$/, "");
+
+  const repository = repositories.find((candidate) => candidate.id === repoId || candidate.name === repoId);
+  const owner = String(repository?.owner || "").trim();
+  const name = String(repository?.name || "").trim();
+
+  return owner && name ? `${owner}/${name}` : "";
+}
+
 export const statusOptions = [
   { id: "draft", label: "Draft", tone: "muted" },
   { id: "ready_for_agent", label: "Ready for agent", tone: "ready" },

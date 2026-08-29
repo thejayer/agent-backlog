@@ -22,6 +22,7 @@
     "start": "node manage/server.mjs",
     "preview": "vite preview --config manage/vite.config.mjs --host 127.0.0.1",
     "test": "playwright test --config manage/playwright.config.mjs",
+    "test:unit": "vitest run --config manage/vitest.config.mjs",
     "smoke": "node scripts/smoke.mjs",
     "agent": "node scripts/manage-agent.mjs",
     "manage:dev": "vite --config manage/vite.config.mjs --host 127.0.0.1",
@@ -36,7 +37,8 @@
     "@vitejs/plugin-react": "^4.3.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^3.2.4"
   },
   "optionalDependencies": {
     "@google-cloud/firestore": "^8.6.0"

@@ -137,6 +137,9 @@ test("Agents view shows active claims, leases, roster, and recent activity", asy
   await expect(page.getByLabel("Agent activity")).toContainText(claimedPayload.workItem.agentRunId);
   await expect(page.getByLabel("Agent activity")).toContainText("web-app");
   await expect(claimedCard.locator(".lease-bar")).toBeVisible();
+  await expect(claimedCard).toContainText("Healthy run");
+  await expect(claimedCard.getByRole("button", { name: "Extend 60m" })).toBeVisible();
+  await expect(claimedCard.getByRole("button", { name: "Release" })).toBeVisible();
   await expect(page.getByLabel("Agent activity")).toContainText("Codex");
   const unleasedProgressCard = page.locator(".claim-card").filter({ hasText: "TASK-102" });
   await expect(unleasedProgressCard).toContainText("Claude Code");
@@ -147,6 +150,55 @@ test("Agents view shows active claims, leases, roster, and recent activity", asy
   await claimedCard.getByRole("button", { name: "Open packet" }).click();
   await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
   await expect(page.locator(".detail-panel")).toContainText("TASK-101");
+  await expect(page.locator(".detail-panel")).toContainText("Healthy run");
+});
+
+test("Agents view recovers stuck claims with extend, reclaim, and release", async ({ page, request }) => {
+  const claim = await request.post("/api/agent/tasks/TASK-101/claim", {
+    data: { agent: "Codex", leaseMinutes: 45 },
+  });
+  expect(claim.ok()).toBe(true);
+  const claimedPayload = await claim.json();
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Agents" }).click();
+
+  const claimedCard = page.locator(".claim-card").filter({ hasText: "TASK-101" });
+  await expect(claimedCard).toContainText("Healthy run");
+  await claimedCard.getByRole("button", { name: "Extend 60m" }).click();
+  await expect(claimedCard).toContainText("Extended the lease by 60 minutes.");
+
+  const afterExtend = await (await request.get("/api/work-items")).json();
+  const extended = afterExtend.workItems.find((item) => item.key === "TASK-101");
+  expect(Date.parse(extended.leaseExpiresAt)).toBeGreaterThan(Date.parse(claimedPayload.workItem.leaseExpiresAt));
+  expect(extended.agentEvents.at(-1)).toMatchObject({ type: "recovery", action: "extend" });
+
+  await claimedCard.getByRole("button", { name: "Release" }).click();
+  await expect(page.locator(".claim-card").filter({ hasText: "TASK-101" })).toHaveCount(0);
+
+  const afterRelease = await (await request.get("/api/work-items")).json();
+  expect(afterRelease.workItems.find((item) => item.key === "TASK-101").status).toBe("ready_for_agent");
+
+  const staleClaim = await request.post("/api/agent/tasks/TASK-102/claim", {
+    data: { agent: "Codex", leaseMinutes: 30 },
+  });
+  expect(staleClaim.ok()).toBe(true);
+  const stalePayload = await staleClaim.json();
+  await request.patch("/api/work-items/TASK-102", {
+    data: { leaseExpiresAt: "2020-01-01T00:00:00.000Z" },
+  });
+
+  await page.reload();
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Agents" }).click();
+  const staleCard = page.locator(".claim-card").filter({ hasText: "TASK-102" });
+  await expect(staleCard).toContainText("Stale run");
+  await staleCard.getByRole("button", { name: "Reclaim" }).click();
+  await expect(staleCard).toContainText("Healthy run");
+
+  const afterReclaim = await (await request.get("/api/work-items")).json();
+  const reclaimed = afterReclaim.workItems.find((item) => item.key === "TASK-102");
+  expect(reclaimed.status).toBe("claimed");
+  expect(reclaimed.agentRunId).not.toBe(stalePayload.workItem.agentRunId);
 });
 
 test("creates a draft work packet", async ({ page }) => {
@@ -308,8 +360,12 @@ test("serves agent Markdown and next-task JSON", async ({ request }) => {
   expect(bootstrapPayload.bootstrap.labels.map((label) => label.id)).toContain("agent-handoff");
   expect(bootstrapPayload.bootstrap.repositories.length).toBeGreaterThan(0);
   expect(bootstrapPayload.bootstrap.commandTemplates.tokenBootstrap).toContain("MANAGE_AUTH_TOKEN");
+  expect(bootstrapPayload.bootstrap.endpoints.recovery).toBe("http://127.0.0.1:5186/api/agent/tasks/{key}/recovery");
   expect(bootstrapPayload.bootstrap.commandTemplates.lifecycleCli).toContain("npm run manage:agent -- claim-next");
   expect(bootstrapPayload.bootstrap.commandTemplates.lifecycleCli).toContain("npm run manage:agent -- closeout");
+  expect(bootstrapPayload.bootstrap.commandTemplates.lifecycleCli).toContain("npm run manage:agent -- extend");
+  expect(bootstrapPayload.bootstrap.commandTemplates.lifecycleCli).toContain("npm run manage:agent -- reclaim");
+  expect(bootstrapPayload.bootstrap.commandTemplates.lifecycleCli).toContain("npm run manage:agent -- release");
   expect(bootstrapPayload.bootstrap.commandTemplates.visualQaFallback).toContain("Playwright");
   expect(bootstrapPayload.bootstrap.commandTemplates.prReadyAndChecks).toContain("gh pr ready");
   expect(bootstrapPayload.bootstrap.commandTemplates.pollReviewChecks).toContain("CodeRabbit");

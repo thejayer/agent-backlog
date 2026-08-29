@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { claimWorkItem, recoverAgentRun, resetWorkItems } from "./workStore.mjs";
+import { claimWorkItem, listWorkItems, recoverAgentRun, resetWorkItems } from "./workStore.mjs";
 
 let dataDir;
 
@@ -112,5 +112,61 @@ describe("recoverAgentRun", () => {
       statusCode: 400,
       message: expect.stringMatching(/observed agent run ID is required/),
     });
+  });
+
+  it("does not let a force reclaim overwrite a newer run id", async () => {
+    const first = await claimReadyPacket();
+    const { patchWorkItem } = await import("./workStore.mjs");
+    await patchWorkItem("TASK-101", {
+      leaseExpiresAt: "2020-01-01T00:00:00.000Z",
+    });
+    const newer = await claimWorkItem("TASK-101", { agent: "Claude Code", force: true });
+
+    await expect(
+      claimWorkItem("TASK-101", {
+        agent: "Operator",
+        force: true,
+        expectedAgentRunId: first.workItem.agentRunId,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringMatching(/agent run changed/),
+    });
+
+    await expect(
+      recoverAgentRun("TASK-101", {
+        action: "reclaim",
+        agentRunId: first.workItem.agentRunId,
+        agent: "Operator",
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringMatching(/agent run changed/),
+    });
+
+    await expect(
+      recoverAgentRun("TASK-101", {
+        action: "extend",
+        agentRunId: first.workItem.agentRunId,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringMatching(/agent run changed/),
+    });
+
+    await expect(
+      recoverAgentRun("TASK-101", {
+        action: "release",
+        agentRunId: first.workItem.agentRunId,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: expect.stringMatching(/agent run changed/),
+    });
+
+    const latest = (await listWorkItems()).find((item) => item.key === "TASK-101");
+    expect(latest.claimedBy).toBe("Claude Code");
+    expect(latest.agentRunId).toBe(newer.workItem.agentRunId);
+    expect(latest.status).toBe("claimed");
   });
 });

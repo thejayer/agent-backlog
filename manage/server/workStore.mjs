@@ -294,6 +294,10 @@ export async function claimWorkItem(key, payload = {}) {
   const currentItem = items[index];
   const now = new Date();
 
+  if (Object.prototype.hasOwnProperty.call(payload, "expectedAgentRunId")) {
+    assertExpectedAgentRunId(currentItem, payload.expectedAgentRunId);
+  }
+
   if (isLeaseActive(currentItem, now) && !payload.force) {
     throw Object.assign(
       new Error(
@@ -346,15 +350,11 @@ export async function claimWorkItem(key, payload = {}) {
   };
 }
 
-function assertObservedAgentRun(currentItem, payload) {
-  if (!Object.prototype.hasOwnProperty.call(payload || {}, "agentRunId")) {
-    throw Object.assign(new Error("The observed agent run ID is required for recovery actions"), { statusCode: 400 });
-  }
+function assertExpectedAgentRunId(currentItem, expectedAgentRunId) {
+  const expected = String(expectedAgentRunId || "").trim();
+  const current = String(currentItem.agentRunId || "").trim();
 
-  const expectedAgentRunId = String(payload.agentRunId || "").trim();
-  const currentAgentRunId = String(currentItem.agentRunId || "").trim();
-
-  if (expectedAgentRunId !== currentAgentRunId) {
+  if (expected !== current) {
     throw Object.assign(
       new Error("The agent run changed before recovery. Refresh the board and try again."),
       { statusCode: 409 },
@@ -362,11 +362,15 @@ function assertObservedAgentRun(currentItem, payload) {
   }
 }
 
-function recoveryActor(payload = {}, authenticatedActor = "") {
-  return String(authenticatedActor || payload.agent || payload.claimedBy || "Operator").trim() || "Operator";
+function assertObservedAgentRun(currentItem, payload) {
+  if (!Object.prototype.hasOwnProperty.call(payload || {}, "agentRunId")) {
+    throw Object.assign(new Error("The observed agent run ID is required for recovery actions"), { statusCode: 400 });
+  }
+
+  assertExpectedAgentRunId(currentItem, payload.agentRunId);
 }
 
-export async function recoverAgentRun(key, payload = {}, { actor: authenticatedActor } = {}) {
+async function readObservedRecoveryItem(key, payload) {
   const items = await readWorkItems();
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
@@ -376,14 +380,11 @@ export async function recoverAgentRun(key, payload = {}, { actor: authenticatedA
   }
 
   const currentItem = items[index];
-  const action = String(payload.action || "").trim().toLowerCase();
   const now = new Date();
+  const action = String(payload.action || "").trim().toLowerCase();
+  assertObservedAgentRun(currentItem, payload);
   const health = deriveAgentRunHealth(currentItem, now);
   const allowedActions = new Set(health.actions.map((candidate) => candidate.id));
-
-  if (!["release", "reclaim", "extend"].includes(action)) {
-    throw Object.assign(new Error("Recovery action must be release, reclaim, or extend"), { statusCode: 400 });
-  }
 
   if (!allowedActions.has(action)) {
     throw Object.assign(
@@ -392,20 +393,39 @@ export async function recoverAgentRun(key, payload = {}, { actor: authenticatedA
     );
   }
 
-  assertObservedAgentRun(currentItem, payload);
+  return { items, index, currentItem, now, health };
+}
+
+function recoveryActor(payload = {}, authenticatedActor = "") {
+  return String(authenticatedActor || payload.agent || payload.claimedBy || "Operator").trim() || "Operator";
+}
+
+export async function recoverAgentRun(key, payload = {}, { actor: authenticatedActor } = {}) {
+  const action = String(payload.action || "").trim().toLowerCase();
+
+  if (!["release", "reclaim", "extend"].includes(action)) {
+    throw Object.assign(new Error("Recovery action must be release, reclaim, or extend"), { statusCode: 400 });
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(payload || {}, "agentRunId")) {
+    throw Object.assign(new Error("The observed agent run ID is required for recovery actions"), { statusCode: 400 });
+  }
 
   if (action === "reclaim") {
-    const previousRunId = String(currentItem.agentRunId || "").trim() || "missing run context";
-    const result = await claimWorkItem(normalizedKey, {
-      agent: payload.agent || currentItem.claimedBy || currentItem.agent || "Operator",
-      claimedBy: payload.agent || currentItem.claimedBy || currentItem.agent || "Operator",
+    const preview = await readObservedRecoveryItem(key, { ...payload, action });
+    const previousRunId = String(preview.currentItem.agentRunId || "").trim() || "missing run context";
+    const result = await claimWorkItem(key, {
+      agent: payload.agent || preview.currentItem.claimedBy || preview.currentItem.agent || "Operator",
+      claimedBy: payload.agent || preview.currentItem.claimedBy || preview.currentItem.agent || "Operator",
       leaseMinutes: payload.leaseMinutes,
       force: true,
+      expectedAgentRunId: payload.agentRunId,
       note: String(payload.note || `Reclaimed from ${previousRunId}.`).trim(),
     });
     return { action, ...result };
   }
 
+  const { items, index, currentItem, now } = await readObservedRecoveryItem(key, { ...payload, action });
   const at = now.toISOString();
   const note = String(payload.note || "").trim();
   const actor = recoveryActor(payload, authenticatedActor);

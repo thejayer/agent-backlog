@@ -210,6 +210,22 @@ describe("bearer tokens", () => {
     expect(() => assertProductionAuthConfig()).toThrow(/must differ from MANAGE_AUTH_TOKEN/);
   });
 
+  it("rejects resolved default and alias collisions so the agent token cannot mint a session", () => {
+    process.env.MANAGE_AUTH_TOKEN = "manage-local";
+    expect(getAccessToken()).toBe("manage-local");
+    expect(getOperatorAccessToken()).toBe("");
+    expect(hasValidLoginToken("manage-local")).toBe(false);
+    expect(hasValidBearer({ headers: { authorization: "Bearer manage-local" } })).toBe(true);
+
+    delete process.env.MANAGE_AUTH_TOKEN;
+    process.env.MANAGE_AUTH_TOKEN = "alias-token";
+    process.env.MANAGE_ADMIN_TOKEN = "alias-token";
+    expect(getAccessToken()).toBe("alias-token");
+    expect(getOperatorAccessToken()).toBe("");
+    expect(hasValidLoginToken("alias-token")).toBe(false);
+    expect(hasValidBearer({ headers: { authorization: "Bearer alias-token" } })).toBe(true);
+  });
+
   it("does not honor the legacy admin token fallback in production mode", () => {
     process.env.NODE_ENV = "production";
     process.env.MANAGE_AUTH_SECRET = "prod-secret";

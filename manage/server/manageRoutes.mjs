@@ -10,7 +10,7 @@ import {
   hasValidLoginToken,
   isPublicRoute,
 } from "./auth.mjs";
-import { authorizeManageRequest, requireBrowserWriteProtection } from "./authorization.mjs";
+import { authorizeManageRequest, managePermissions, requireBrowserWriteProtection, roleHasPermission } from "./authorization.mjs";
 import { findGithubMatchesForItem, hasGithubMatches } from "./githubLinks.mjs";
 import { createGithubIssueForWorkItem } from "./githubIssues.mjs";
 import { readGithubCache, syncGithubCache } from "./githubSync.mjs";
@@ -121,6 +121,10 @@ function authProviderSummary() {
     token: Boolean(getOperatorAccessToken()),
     github: github.available,
   };
+}
+
+function canForceClaim(session) {
+  return roleHasPermission(session?.user?.role, managePermissions.updateWorkspace);
 }
 
 function assertTypedConfirmation(received, expected) {
@@ -580,7 +584,7 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await claimWorkItem(item.key, body);
+    const result = await claimWorkItem(item.key, body, { allowForce: canForceClaim(authorization?.session) });
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
     return true;
   }
@@ -646,7 +650,9 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await claimWorkItem(decodeURIComponent(claimMatch[1]), await readJsonBody(req));
+    const result = await claimWorkItem(decodeURIComponent(claimMatch[1]), await readJsonBody(req), {
+      allowForce: canForceClaim(authorization?.session),
+    });
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
     return true;
   }

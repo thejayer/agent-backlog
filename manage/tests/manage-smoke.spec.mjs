@@ -721,6 +721,12 @@ test("enforces agent least privilege and browser write protection", async ({ bas
     expect((await agent.get("/api/agent/bootstrap")).status()).toBe(200);
     expect((await agent.get("/api/agent/next")).status()).toBe(200);
     expect((await agent.get("/api/agent/next-key")).status()).toBe(200);
+    const claimed = await agent.post("/api/agent/tasks/TASK-101/claim", { data: { agent: "Codex" } });
+    expect(claimed.status()).toBe(200);
+    const forced = await agent.post("/api/agent/tasks/TASK-101/claim", {
+      data: { agent: "Claude Code", force: true },
+    });
+    expect(forced.status(), "agent force-claim of a healthy lease").toBe(403);
     const created = await agent.post("/api/agent/tasks", {
       data: {
         title: "Agent-created lifecycle packet",

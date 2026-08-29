@@ -27,9 +27,33 @@ function hasConfiguredSecret() {
   return Boolean(process.env.MANAGE_AUTH_SECRET);
 }
 
+function configuredAgentToken() {
+  if (process.env.MANAGE_AUTH_TOKEN) {
+    return process.env.MANAGE_AUTH_TOKEN;
+  }
+
+  if (isProduction()) {
+    return "";
+  }
+
+  return LOCAL_AGENT_TOKEN;
+}
+
+function configuredOperatorToken() {
+  if (process.env.MANAGE_OPERATOR_TOKEN) {
+    return process.env.MANAGE_OPERATOR_TOKEN;
+  }
+
+  if (isProduction()) {
+    return "";
+  }
+
+  return process.env.MANAGE_ADMIN_TOKEN || LOCAL_OPERATOR_TOKEN;
+}
+
 function hasConflictingAccessTokens() {
-  const agentToken = process.env.MANAGE_AUTH_TOKEN;
-  const operatorToken = process.env.MANAGE_OPERATOR_TOKEN;
+  const agentToken = configuredAgentToken();
+  const operatorToken = configuredOperatorToken();
   return Boolean(agentToken && operatorToken && agentToken === operatorToken);
 }
 
@@ -56,27 +80,15 @@ export function assertProductionAuthConfig() {
 }
 
 export function getAccessToken() {
-  if (process.env.MANAGE_AUTH_TOKEN) {
-    return process.env.MANAGE_AUTH_TOKEN;
-  }
-
-  if (isProduction()) {
-    return "";
-  }
-
-  return LOCAL_AGENT_TOKEN;
+  return configuredAgentToken();
 }
 
 export function getOperatorAccessToken() {
-  if (process.env.MANAGE_OPERATOR_TOKEN) {
-    return hasConflictingAccessTokens() ? "" : process.env.MANAGE_OPERATOR_TOKEN;
-  }
-
-  if (isProduction()) {
+  if (hasConflictingAccessTokens()) {
     return "";
   }
 
-  return process.env.MANAGE_ADMIN_TOKEN || LOCAL_OPERATOR_TOKEN;
+  return configuredOperatorToken();
 }
 
 function sign(value) {

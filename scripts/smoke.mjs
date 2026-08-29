@@ -166,6 +166,12 @@ try {
   const conflict = await agentAuthed("/api/agent/tasks/TASK-101/claim", { method: "POST", body: JSON.stringify({ agent: "Claude Code" }) });
   check("second claim is rejected (409)", conflict.status === 409);
 
+  const agentForce = await agentAuthed("/api/agent/tasks/TASK-101/claim", {
+    method: "POST",
+    body: JSON.stringify({ agent: "Claude Code", force: true }),
+  });
+  check("agent force-claim of a healthy lease is rejected (403)", agentForce.status === 403);
+
   check("claimed packet exposes run health", claimBody.workItem?.agentRunHealth?.state === "healthy");
   check("healthy run offers extend and release", Array.isArray(claimBody.workItem?.agentRunHealth?.actions) && claimBody.workItem.agentRunHealth.actions.some((action) => action.id === "extend"));
 

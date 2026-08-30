@@ -297,6 +297,48 @@ try {
       && !JSON.stringify(mockSyncBody).match(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault/i),
   );
 
+  const reconciliation = await operatorAuthed("/api/github/reconciliation");
+  const reconciliationBody = await reconciliation.json();
+  const unmatched = reconciliationBody.reconciliation?.unmatchedMergedPullRequests || [];
+  const task101Match = unmatched.find((pull) => pull.number === 101 && pull.repoId === "web-app");
+  const unmatchedMarketing = unmatched.find((pull) => pull.number === 88 && pull.repoId === "marketing-site");
+  check("reconciliation GET returns 200", reconciliation.status === 200);
+  check("reconciliation suggests TASK-101 for the matching merged PR", task101Match?.suggestedPacket?.key === "TASK-101");
+  check("reconciliation leaves the unmatched marketing PR without a packet", Boolean(unmatchedMarketing) && unmatchedMarketing.suggestedPacket == null);
+  check("reconciliation payload stays generic", !JSON.stringify(reconciliationBody).match(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault/i));
+
+  const linked = await operatorAuthed("/api/github/reconciliation", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "link",
+      pullRequestUrl: "https://github.com/your-org/web-app/pull/101",
+      workItemKey: "TASK-101",
+    }),
+  });
+  const linkedBody = await linked.json();
+  check("reconciliation link returns 200", linked.status === 200);
+  check(
+    "reconciliation link records the merged PR on TASK-101",
+    linkedBody.workItem?.key === "TASK-101"
+      && linkedBody.workItem?.githubPrUrl === "https://github.com/your-org/web-app/pull/101",
+  );
+
+  const followUp = await operatorAuthed("/api/github/reconciliation", {
+    method: "POST",
+    body: JSON.stringify({
+      action: "follow_up",
+      pullRequestUrl: "https://github.com/your-org/marketing-site/pull/88",
+    }),
+  });
+  const followUpBody = await followUp.json();
+  check("reconciliation follow-up creates a TASK packet", followUp.status === 201 && /^TASK-\d+$/.test(followUpBody.workItem?.key || ""));
+  check(
+    "reconciliation follow-up uses generic copy",
+    followUpBody.workItem?.repo === "marketing-site"
+      && followUpBody.created === true
+      && !JSON.stringify(followUpBody).match(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault|Shipped reconciliation/i),
+  );
+
   const systemStatus = await operatorAuthed("/api/system/status");
   const systemStatusBody = await systemStatus.json();
   check("system status surfaces GitHub freshness", systemStatusBody.githubSync?.freshness === "fresh");

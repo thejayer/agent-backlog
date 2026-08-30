@@ -108,6 +108,9 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
   pages, stay inside a request budget, and surface stale vs fresh on Repos /
   system status. Auto-link packets and import issues; `{"mock":true}` works
   without a GitHub token.
+- **Merged-PR reconciliation** — compare cached merged PRs with backlog and
+  shipped packets, match by `TASK-*` key in the title or branch when possible,
+  and open a follow-up draft when a merge has no matching packet.
 
 ## API
 
@@ -129,6 +132,7 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
 | GET | `/agent/instructions.md` | Agent onboarding instructions |
 | GET | `/api/agent/bootstrap` | Machine-readable endpoint + command map |
 | POST | `/api/github/sync` | Incremental GitHub cache refresh (`{"mock":true}` for demo) |
+| GET/POST | `/api/github/reconciliation` | Match cached merged PRs to packets, or create a follow-up |
 | GET/POST | `/api/backups` | List / create state snapshots |
 
 All routes except the public ones require a signed operator session cookie or

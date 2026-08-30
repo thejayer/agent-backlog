@@ -12,6 +12,10 @@ export function getWorkItemsPath() {
   return path.join(getManageDataDir(), "work-items.json");
 }
 
+export function getInitiativesPath() {
+  return path.join(getManageDataDir(), "initiatives.json");
+}
+
 export function getGithubCachePath() {
   return path.join(getManageDataDir(), "github-cache.json");
 }

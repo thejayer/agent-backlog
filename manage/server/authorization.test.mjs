@@ -68,6 +68,8 @@ describe("permission matrix", () => {
       "github-sync",
       "github-reconciliation",
       "work-items",
+      "initiatives",
+      "initiative",
       "reset",
       "agent-bootstrap",
       "agent-next-key",
@@ -80,8 +82,12 @@ describe("permission matrix", () => {
     expect(manageRoutePolicies.map((policy) => policy.id)).not.toEqual(expect.arrayContaining([
       "audit-events",
       "saved-views",
-      "initiatives",
     ]));
+    expect(permissionForRequest("/api/initiatives", "GET").permission).toBe(managePermissions.viewWorkspace);
+    expect(permissionForRequest("/api/initiatives", "POST").permission).toBe(managePermissions.updateWorkspace);
+    expect(permissionForRequest("/api/initiatives/initiative-1", "PATCH").permission).toBe(
+      managePermissions.updateWorkspace,
+    );
   });
 
   it("grants operators all permissions and keeps viewers read-only", () => {
@@ -124,6 +130,9 @@ describe("permission matrix", () => {
       ["POST", "/api/github/reconciliation"],
       ["POST", "/api/agent/tasks/TASK-101/recovery"],
       ["GET", "/api/work-items"],
+      ["GET", "/api/initiatives"],
+      ["POST", "/api/initiatives"],
+      ["PATCH", "/api/initiatives/initiative-1"],
     ]) {
       expect(
         () => authorizeManageRequest(agentRequest(method), { pathname, method }),

@@ -23,6 +23,7 @@ import { resolveCompletionGithubEvidence } from "./completionWrite.mjs";
 import { fetchPullRequestDeliveryEvidence, readGithubCache, summarizeGithubSyncStatus, syncGithubCache } from "./githubSync.mjs";
 import { completeGithubLogin, getGithubLoginStart } from "./githubOAuth.mjs";
 import { createStateSnapshot, getStorageStatus, listStateSnapshots, restoreStateSnapshot } from "./storage.mjs";
+import { createInitiative, listInitiatives, patchInitiative, resetInitiatives } from "./initiativeStore.mjs";
 import {
   applyGithubMatches,
   claimWorkItem,
@@ -209,6 +210,7 @@ async function currentBackupState() {
   return {
     "work-items": await listWorkItems(),
     "github-cache": await readGithubCache(),
+    initiatives: await listInitiatives(),
   };
 }
 
@@ -389,6 +391,7 @@ async function handleRoute(req, res, baseUrl) {
       preRestoreSnapshot,
       workItems: await listWorkItems(),
       github: await readGithubCache(),
+      initiatives: await listInitiatives(),
       backups: await listStateSnapshots(),
     });
     return true;
@@ -573,6 +576,34 @@ async function handleRoute(req, res, baseUrl) {
     return true;
   }
 
+  if (pathname === "/api/initiatives") {
+    if (method === "GET") {
+      sendJson(res, 200, { initiatives: await listInitiatives() });
+      return true;
+    }
+
+    if (method === "POST") {
+      const result = await createInitiative(withMutationMetadata(req, await readJsonBody(req)));
+      sendJson(res, 201, result);
+      return true;
+    }
+
+    methodAllowed(res, ["GET", "POST"]);
+    return true;
+  }
+
+  const initiativeMatch = pathname.match(/^\/api\/initiatives\/([^/]+)$/);
+  if (initiativeMatch) {
+    if (method !== "PATCH") {
+      methodAllowed(res, ["PATCH"]);
+      return true;
+    }
+
+    const id = decodeURIComponent(initiativeMatch[1]);
+    sendJson(res, 200, await patchInitiative(id, await readJsonBody(req)));
+    return true;
+  }
+
   const workItemGithubIssueMatch = pathname.match(/^\/api\/work-items\/([^/]+)\/github-issue$/);
   if (workItemGithubIssueMatch) {
     if (method !== "POST") {
@@ -682,7 +713,10 @@ async function handleRoute(req, res, baseUrl) {
 
     const body = await readJsonBody(req);
     assertTypedConfirmation(body.confirmation, RESET_CONFIRMATION);
-    sendJson(res, 200, { workItems: await resetWorkItems() });
+    sendJson(res, 200, {
+      workItems: await resetWorkItems(),
+      initiatives: await resetInitiatives(),
+    });
     return true;
   }
 

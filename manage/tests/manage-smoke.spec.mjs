@@ -1,4 +1,13 @@
 import { expect, request as playwrightRequest, test } from "@playwright/test";
+import { workItems as seedWorkItems } from "../src/data/workItems.mjs";
+
+const CSC_LEAKAGE = /Commerce Street|csc-workspace|csc-crm|CSC-|COM-|commercestreet|Harbor|RegVault|gcloud|linear\.app\/.*COM-/i;
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((complete) => { resolve = complete; });
+  return { promise, resolve };
+}
 
 const manageAuthToken = process.env.MANAGE_PLAYWRIGHT_AUTH_TOKEN || "manage-playwright-local-agent-token";
 const manageOperatorToken = process.env.MANAGE_PLAYWRIGHT_OPERATOR_TOKEN || "manage-playwright-local-operator-token";
@@ -844,6 +853,7 @@ test("creates exports and restores backlog backups", async ({ page, request }) =
   expect(exported.headers()["content-disposition"]).toContain("manage-backlog-");
   const exportedPayload = await exported.json();
   expect(exportedPayload.state["work-items"]).toHaveLength(6);
+  expect(exportedPayload.state.initiatives).toEqual([]);
   expect(exportedPayload.state["github-cache"].repos.length).toBeGreaterThan(0);
 
   const snapshotId = listedPayload.backups[0].id;
@@ -863,6 +873,229 @@ test("creates exports and restores backlog backups", async ({ page, request }) =
 
   await page.reload();
   await expect(page.locator(".detail-panel")).toContainText(originalTitle);
+});
+
+test("creates an initiative and rolls up linked packet delivery", async ({ page, request }) => {
+  const linkedPacket = seedWorkItems[0];
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Initiatives" }).click();
+
+  await expect(page.getByRole("heading", { name: "Initiatives" })).toBeVisible();
+  await expect(page.getByLabel("Initiatives workspace")).toContainText("Turn packets into a portfolio");
+  await page.getByRole("button", { name: "New initiative" }).click();
+  await page.getByLabel(`Select ${linkedPacket.key}`).check();
+  await page.getByRole("button", { name: "Review initiative" }).click();
+  await page.getByLabel("New initiative title").fill("Delivery operating system");
+  await page.getByLabel("New initiative objective").fill("Make delivery progress legible from outcome to shipped work.");
+  await page.getByLabel("New initiative owner").fill("Operator");
+  await page.getByRole("button", { name: "Confirm and create" }).click();
+
+  await expect(page.getByLabel("Selected initiative")).toBeVisible();
+  await expect(page.getByLabel("Initiative delivery rollup")).toContainText("0/1");
+  await expect(page.getByLabel("Linked work packets")).toContainText(linkedPacket.key);
+  await page.getByLabel("Initiative health").selectOption("watch");
+  await page.getByLabel("Initiative next action").fill("Ship the first portfolio review.");
+  const completionCriteria = "First release gate\nSecond release gate";
+  await page.getByLabel("Initiative completion criteria").fill(completionCriteria);
+  await page.getByRole("button", { name: "Save initiative" }).click();
+  await expect(page.getByRole("button", { name: "Saved" })).toBeVisible();
+  await expect(page.getByLabel("Initiative completion criteria")).toHaveValue(completionCriteria);
+
+  const payload = await (await request.get("/api/initiatives")).json();
+  expect(payload.initiatives).toHaveLength(1);
+  expect(payload.initiatives[0]).toMatchObject({
+    title: "Delivery operating system",
+    owner: "Operator",
+    health: "watch",
+    nextAction: "Ship the first portfolio review.",
+    completionCriteria: ["First release gate", "Second release gate"],
+    packetKeys: [linkedPacket.key],
+  });
+  expect(JSON.stringify(payload)).not.toMatch(CSC_LEAKAGE);
+  expect(linkedPacket.key).toMatch(/^TASK-\d+$/);
+});
+
+test("replays initiative creation idempotently and rejects CSC packet keys", async ({ request }) => {
+  const headers = { "Idempotency-Key": "initiative-smoke-create" };
+  const first = await request.post("/api/initiatives", {
+    headers,
+    data: { title: "Retry-safe initiative", packetKeys: ["TASK-101", "CSC-394"] },
+  });
+  const replay = await request.post("/api/initiatives", { headers, data: { title: "Duplicate initiative" } });
+
+  expect(first.ok()).toBe(true);
+  expect(replay.ok()).toBe(true);
+  const firstPayload = await first.json();
+  expect(firstPayload.initiative.packetKeys).toEqual(["TASK-101"]);
+  expect((await replay.json()).idempotentReplay).toBe(true);
+  const payload = await (await request.get("/api/initiatives")).json();
+  expect(payload.initiatives).toHaveLength(1);
+  expect(payload.initiatives[0].title).toBe("Retry-safe initiative");
+  expect(JSON.stringify(payload)).not.toMatch(CSC_LEAKAGE);
+});
+
+test("persists initiative packet link and unlink changes immediately", async ({ page, request }) => {
+  const linkedPackets = seedWorkItems.slice(0, 2);
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Initiatives" }).click();
+  await page.getByRole("button", { name: "New initiative" }).click();
+  await page.getByRole("button", { name: "Review initiative" }).click();
+  await page.getByLabel("New initiative title").fill("Persistent packet links");
+  await page.getByRole("button", { name: "Confirm and create" }).click();
+
+  const linkedWork = page.getByLabel("Linked work packets");
+  for (const packet of linkedPackets) {
+    await page.getByLabel("Add linked packet").selectOption(packet.key);
+    await expect(linkedWork.getByRole("status")).toHaveText("Packet links saved");
+  }
+
+  await expect(page.getByLabel("Initiative delivery rollup")).toContainText("0/2");
+  let payload = await (await request.get("/api/initiatives")).json();
+  expect(payload.initiatives[0].packetKeys).toEqual(linkedPackets.map((packet) => packet.key));
+
+  await page.reload();
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Initiatives" }).click();
+  await expect(page.getByLabel("Initiative delivery rollup")).toContainText("0/2");
+  await expect(page.getByLabel("Linked work packets")).toContainText(linkedPackets[0].key);
+  await expect(page.getByLabel("Linked work packets")).toContainText(linkedPackets[1].key);
+
+  await page.getByRole("button", { name: `Unlink ${linkedPackets[0].key}` }).click();
+  await expect(page.getByLabel("Linked work packets").getByRole("status")).toHaveText("Packet links saved");
+  await expect(page.getByLabel("Initiative delivery rollup")).toContainText("0/1");
+
+  await page.reload();
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Initiatives" }).click();
+  await expect(page.getByRole("button", { name: `Unlink ${linkedPackets[0].key}` })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: `Unlink ${linkedPackets[1].key}` })).toBeVisible();
+  payload = await (await request.get("/api/initiatives")).json();
+  expect(payload.initiatives[0].packetKeys).toEqual([linkedPackets[1].key]);
+});
+
+test("bootstraps an editable initiative from a template and multiple packets only after confirmation", async ({ page, request }) => {
+  const linkedPackets = seedWorkItems.slice(0, 2);
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Initiatives" }).click();
+  await page.getByRole("button", { name: "New initiative" }).click();
+  await page.getByLabel("Initiative template").selectOption("delivery-program");
+  for (const packet of linkedPackets) await page.getByLabel(`Select ${packet.key}`).check();
+  await page.getByRole("button", { name: "Review initiative" }).click();
+
+  await expect(page.getByRole("note")).toContainText("Nothing is saved until you confirm");
+  await expect(page.getByLabel("New initiative title")).toHaveValue("Coordinate a multi-packet delivery outcome");
+  await expect(page.getByLabel("New initiative labels")).toHaveValue(/delivery/);
+  await expect(page.getByLabel("Packets to link")).toContainText(linkedPackets[0].key);
+  expect((await request.get("/api/initiatives")).status()).toBe(200);
+  expect((await (await request.get("/api/initiatives")).json()).initiatives).toHaveLength(0);
+
+  await page.getByRole("button", { name: "Cancel" }).click();
+  expect((await (await request.get("/api/initiatives")).json()).initiatives).toHaveLength(0);
+
+  await page.getByRole("button", { name: "New initiative" }).click();
+  await page.getByLabel("Initiative template").selectOption("delivery-program");
+  for (const packet of linkedPackets) await page.getByLabel(`Select ${packet.key}`).check();
+  await page.getByRole("button", { name: "Review initiative" }).click();
+  await page.getByLabel("New initiative title").fill("Edited portfolio outcome");
+  await page.getByLabel("New initiative objective").fill("Use the operator's revised objective.");
+  await page.getByLabel("New initiative completion criteria").fill("First edited gate\nSecond edited gate");
+  await page.getByLabel("New initiative labels").fill("edited, portfolio");
+  await page.getByLabel("New initiative grouping guidance").fill("Keep these packets in one release decision.");
+  await page.getByRole("button", { name: "Confirm and create" }).click();
+
+  await expect(page.getByLabel("Selected initiative")).toBeVisible();
+  const payload = await (await request.get("/api/initiatives")).json();
+  expect(payload.initiatives).toHaveLength(1);
+  expect(payload.initiatives[0]).toMatchObject({
+    title: "Edited portfolio outcome",
+    objective: "Use the operator's revised objective.",
+    completionCriteria: ["First edited gate", "Second edited gate"],
+    labels: ["edited", "portfolio"],
+    groupingGuidance: "Keep these packets in one release decision.",
+    packetKeys: linkedPackets.map((packet) => packet.key),
+  });
+  expect(JSON.stringify(payload)).not.toMatch(CSC_LEAKAGE);
+});
+
+test("keeps initiative creation atomic when confirmation fails", async ({ page, request }) => {
+  const linkedPacket = seedWorkItems[0];
+  const createGate = deferred();
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Initiatives" }).click();
+  await page.route("**/api/initiatives", async (route) => {
+    if (route.request().method() === "POST") {
+      await createGate.promise;
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "Simulated create failure" }) });
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole("button", { name: "New initiative" }).click();
+  await page.getByLabel(`Select ${linkedPacket.key}`).check();
+  await page.getByRole("button", { name: "Review initiative" }).click();
+  await page.getByRole("button", { name: "Confirm and create" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Review initiative suggestion" });
+  await expect(dialog.getByRole("button", { name: "Close initiative composer" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await page.locator(".modal-backdrop").click({ position: { x: 1, y: 1 } });
+  await expect(dialog).toBeVisible();
+  createGate.resolve();
+
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("initiative could not be created");
+  await expect(page.getByRole("button", { name: "Confirm and create" })).toBeEnabled();
+  expect((await (await request.get("/api/initiatives")).json()).initiatives).toHaveLength(0);
+});
+
+test("initiative timeline drills from completed packet through merge and deployment", async ({ page, request }) => {
+  const linkedPacket = seedWorkItems[0];
+  const packetNumber = Number(linkedPacket.key.replace("TASK-", ""));
+
+  await page.request.patch(`/api/work-items/${linkedPacket.key}`, {
+    data: {
+      status: "done",
+      completionOverrideReason: "Seed completed packet for initiative timeline coverage.",
+      githubBranch: `codex/${linkedPacket.key.toLowerCase()}-contact-import-dedupe`,
+      githubPrUrl: `https://github.com/your-org/${linkedPacket.repo}/pull/${packetNumber}`,
+    },
+  });
+  await request.post("/api/github/sync", { data: { mock: true } });
+  await request.post("/api/initiatives", {
+    data: {
+      title: "Release confidence",
+      objective: "See how initiative work moves from execution to production.",
+      status: "active",
+      health: "on_track",
+      packetKeys: [linkedPacket.key],
+    },
+  });
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Initiatives" }).click();
+
+  const timeline = page.getByLabel("Initiative release timeline");
+  await expect(timeline).toBeVisible();
+  await expect(timeline.getByText("Release timeline", { exact: true })).toBeVisible();
+  await expect(timeline.locator(".initiative-timeline-event")).toHaveCount(3);
+  await expect(timeline).toContainText("Packet completed");
+  await expect(timeline).toContainText("Pull request merged");
+  await expect(timeline).toContainText("Deployed");
+  await expect(timeline.getByRole("link", { name: "View PR" })).toHaveAttribute("href", new RegExp(`/pull/${packetNumber}$`));
+  await expect(timeline.getByRole("link", { name: "View run" })).toHaveAttribute("href", /\/actions\/runs\//);
+  expect(JSON.stringify(await (await request.get("/api/initiatives")).json())).not.toMatch(CSC_LEAKAGE);
+
+  await timeline.getByLabel("Release event filters").getByRole("button", { name: /Deployments/ }).click();
+  await expect(timeline.locator(".initiative-timeline-event")).toHaveCount(1);
+  await expect(timeline).toContainText("Deployed");
+
+  await timeline.getByLabel("Release event filters").getByRole("button", { name: /Packets/ }).click();
+  await timeline.getByRole("button", { name: "Open packet" }).click();
+  await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
+  await expect(page.getByLabel("Selected work packet")).toContainText(linkedPacket.key);
 });
 
 test("refreshes read-only GitHub cache", async ({ page, request }) => {
@@ -1129,6 +1362,8 @@ test("enforces agent least privilege and browser write protection", async ({ bas
       ["get", "/api/github/reconciliation", undefined],
       ["post", "/api/github/reconciliation", { action: "follow_up", pullRequestUrl: "https://github.com/your-org/marketing-site/pull/88" }],
       ["get", "/api/work-items", undefined],
+      ["get", "/api/initiatives", undefined],
+      ["post", "/api/initiatives", { title: "Agent should not create initiatives" }],
     ]) {
       const response = await agent[method](path, { data, failOnStatusCode: false });
       expect(response.status(), `${method.toUpperCase()} ${path}`).toBe(403);

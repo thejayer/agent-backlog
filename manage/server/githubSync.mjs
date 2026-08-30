@@ -4,6 +4,14 @@ import { repositories } from "../src/data/workItems.mjs";
 import { readJsonState, writeJsonState } from "./storage.mjs";
 
 const execFileAsync = promisify(execFile);
+const CLOSED_PULLS_PAGE_SIZE = 100;
+const CLOSED_PULLS_MAX_PAGES = 10;
+const MERGED_PULL_HISTORY_DAYS = 730;
+const DEFAULT_SYNC_CONCURRENCY = 3;
+const DEFAULT_SYNC_REQUEST_BUDGET = 160;
+const FAILED_WORKFLOW_RUN_LIMIT = 8;
+const WORKFLOW_RUNS_PAGE_SIZE = 100;
+const WORKFLOW_RUNS_MAX_PAGES = 10;
 
 function repoSlug(repo) {
   return `${repo.owner}/${repo.name}`;
@@ -25,7 +33,14 @@ async function githubApiWithToken(endpoint) {
   const payload = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(payload.message || `GitHub API request failed: ${response.status}`);
+    const error = new Error(payload.message || `GitHub API request failed: ${response.status}`);
+    error.statusCode = response.status;
+    error.rateLimited = response.status === 429
+      || (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0")
+      || /secondary rate limit/i.test(error.message);
+    error.retryAfter = response.headers.get("retry-after") || "";
+    error.rateLimitReset = response.headers.get("x-ratelimit-reset") || "";
+    throw error;
   }
 
   return payload;
@@ -41,6 +56,28 @@ async function githubApiWithCli(endpoint) {
 
 async function githubApi(endpoint) {
   return process.env.GITHUB_TOKEN ? githubApiWithToken(endpoint) : githubApiWithCli(endpoint);
+}
+
+export function createGithubRequestBudget(limit = DEFAULT_SYNC_REQUEST_BUDGET) {
+  let used = 0;
+
+  return {
+    async request(endpoint, request = githubApi) {
+      if (used >= limit) {
+        const error = new Error(`GitHub sync request budget exhausted after ${limit} requests`);
+        error.code = "GITHUB_REQUEST_BUDGET_EXHAUSTED";
+        throw error;
+      }
+      used += 1;
+      return request(endpoint);
+    },
+    get used() {
+      return used;
+    },
+    get limit() {
+      return limit;
+    },
+  };
 }
 
 export function parseGithubPullRequestUrl(value) {
@@ -96,6 +133,115 @@ export async function githubApiObjectPaginated(endpoint, field, requestPage = gi
       return items;
     }
   }
+}
+
+function timestamp(value) {
+  const parsed = Date.parse(value || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function newestTimestamp(values = [], fields = []) {
+  return values.reduce((latest, value) => {
+    const candidate = fields.reduce((result, field) => Math.max(result, timestamp(value?.[field])), 0);
+    return Math.max(latest, candidate);
+  }, 0);
+}
+
+function isoOrEmpty(value) {
+  return value > 0 ? new Date(value).toISOString() : "";
+}
+
+export function githubSyncFreshness(syncState, source = "") {
+  if (syncState === "current" || ["mock", "seed"].includes(source)) {
+    return syncState && syncState !== "current" ? "stale" : "fresh";
+  }
+
+  if (syncState === "stale" || syncState === "partially_degraded" || syncState === "degraded") {
+    return "stale";
+  }
+
+  return "unknown";
+}
+
+export function summarizeGithubSyncStatus(cache = {}) {
+  const source = cache.source
+    || (process.env.GITHUB_TOKEN ? "github-token" : "gh-cli");
+  const syncState = cache.syncState
+    || (["mock", "seed"].includes(cache.source) ? "current" : "");
+  const freshness = githubSyncFreshness(syncState, cache.source);
+
+  return {
+    source,
+    syncState: syncState || "unknown",
+    freshness,
+    lastAttemptAt: cache.lastAttemptAt || "",
+    lastSuccessAt: cache.lastSuccessAt || cache.syncedAt || "",
+    requestBudget: cache.requestBudget || null,
+  };
+}
+
+export async function fetchClosedPullsIncremental(
+  slug,
+  requestPage = githubApi,
+  { updatedSince = "", historyCutoff = "", maxPages = CLOSED_PULLS_MAX_PAGES } = {},
+) {
+  const pulls = [];
+  const updatedSinceTime = timestamp(updatedSince);
+  const historyCutoffTime = timestamp(historyCutoff);
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const pagePulls = await requestPage(
+      `/repos/${slug}/pulls?state=closed&sort=updated&direction=desc&per_page=${CLOSED_PULLS_PAGE_SIZE}&page=${page}`,
+    );
+    if (!Array.isArray(pagePulls)) {
+      throw new Error("Closed pull request response must be an array");
+    }
+    pulls.push(...pagePulls);
+
+    const reachedKnownData = updatedSinceTime > 0
+      && pagePulls.some((pull) => timestamp(pull.updated_at) <= updatedSinceTime);
+    const reachedHistoryBoundary = historyCutoffTime > 0
+      && pagePulls.some((pull) => timestamp(pull.updated_at || pull.closed_at) < historyCutoffTime);
+    if (pagePulls.length < CLOSED_PULLS_PAGE_SIZE || reachedKnownData || reachedHistoryBoundary) {
+      break;
+    }
+  }
+
+  return pulls.filter((pull) => (
+    timestamp(pull.updated_at) > updatedSinceTime
+    && (historyCutoffTime === 0 || timestamp(pull.merged_at) >= historyCutoffTime)
+  ));
+}
+
+function mergeByKey(current = [], incoming = [], key, sortField, limit, cutoff = 0) {
+  const merged = new Map();
+  for (const item of [...current, ...incoming]) {
+    const id = String(item?.[key] ?? "");
+    const occurredAt = timestamp(item?.[sortField]);
+    if (!id || (cutoff > 0 && occurredAt > 0 && occurredAt < cutoff)) {
+      continue;
+    }
+    merged.set(id, { ...(merged.get(id) || {}), ...item });
+  }
+  return [...merged.values()]
+    .sort((a, b) => timestamp(b?.[sortField]) - timestamp(a?.[sortField]))
+    .slice(0, limit);
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+
+  async function run() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), items.length || 1) }, run));
+  return results;
 }
 
 const successfulCheckConclusions = new Set(["success", "neutral", "skipped"]);
@@ -186,6 +332,27 @@ function summarizePulls(pulls) {
   }));
 }
 
+export function summarizeMergedPulls(pulls, { limit = 100, historyCutoff = "" } = {}) {
+  const cutoff = timestamp(historyCutoff);
+  return pulls
+    .filter((pr) => pr.merged_at && (!cutoff || timestamp(pr.merged_at) >= cutoff))
+    .sort((a, b) => String(b.merged_at).localeCompare(String(a.merged_at)))
+    .slice(0, limit)
+    .map((pr) => ({
+      number: pr.number,
+      title: pr.title,
+      url: pr.html_url,
+      branch: pr.head?.ref || "",
+      baseBranch: pr.base?.ref || "",
+      author: pr.user?.login || "",
+      mergedBy: pr.merged_by?.login || "",
+      mergedAt: pr.merged_at,
+      updatedAt: pr.updated_at || pr.merged_at,
+      closedAt: pr.closed_at || "",
+      mergeCommitSha: pr.merge_commit_sha || "",
+    }));
+}
+
 function summarizeIssues(issues) {
   return issues
     .filter((issue) => !issue.pull_request)
@@ -200,10 +367,14 @@ function summarizeIssues(issues) {
     }));
 }
 
+function isFailedWorkflowRun(run) {
+  return Boolean(run?.conclusion && run.conclusion !== "success" && run.conclusion !== "skipped");
+}
+
 function summarizeFailedRuns(runsPayload) {
   return (runsPayload.workflow_runs || [])
-    .filter((run) => run.conclusion && run.conclusion !== "success" && run.conclusion !== "skipped")
-    .slice(0, 8)
+    .filter(isFailedWorkflowRun)
+    .slice(0, FAILED_WORKFLOW_RUN_LIMIT)
     .map((run) => ({
       id: run.id,
       name: run.name,
@@ -213,6 +384,62 @@ function summarizeFailedRuns(runsPayload) {
       url: run.html_url,
       updatedAt: run.updated_at,
     }));
+}
+
+export async function fetchCompletedWorkflowRuns(
+  slug,
+  requestPage = githubApi,
+  { createdSince = "", maxPages = WORKFLOW_RUNS_MAX_PAGES } = {},
+) {
+  const workflowRuns = [];
+  const createdSinceTime = timestamp(createdSince);
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const payload = await requestPage(
+      `/repos/${slug}/actions/runs?status=completed&per_page=${WORKFLOW_RUNS_PAGE_SIZE}&page=${page}`,
+    );
+    const pageRuns = Array.isArray(payload?.workflow_runs) ? payload.workflow_runs : [];
+    workflowRuns.push(...pageRuns);
+
+    // The Actions list is newest-created first and has no updated_at sort.
+    // Stop on created_at so a stale updated_at on page 1 cannot hide later rows.
+    const reachedKnownData = createdSinceTime > 0
+      && pageRuns.some((run) => timestamp(run.created_at) <= createdSinceTime);
+
+    if (pageRuns.length < WORKFLOW_RUNS_PAGE_SIZE || reachedKnownData) {
+      break;
+    }
+  }
+
+  return {
+    workflow_runs: createdSinceTime > 0
+      ? workflowRuns.filter((run) => timestamp(run.created_at) > createdSinceTime)
+      : workflowRuns,
+  };
+}
+
+export async function revalidateFailedWorkflowRuns(slug, failedRuns = [], request = githubApi) {
+  const unique = [];
+  const seen = new Set();
+
+  for (const failed of failedRuns) {
+    const id = String(failed?.id || "").trim();
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    unique.push(id);
+  }
+
+  const results = await Promise.all(unique.map(async (id) => {
+    try {
+      return await request(`/repos/${slug}/actions/runs/${id}`);
+    } catch {
+      return null;
+    }
+  }));
+
+  return results.filter(isFailedWorkflowRun);
 }
 
 function summarizeBranches(branches) {
@@ -245,16 +472,25 @@ function mockWorkForRepo(repoId) {
   return matches[repoId];
 }
 
+function withFreshness(record, syncedAt) {
+  return {
+    ...record,
+    lastAttemptAt: syncedAt,
+    lastSuccessAt: syncedAt,
+    syncState: "current",
+  };
+}
+
 export function createMockGithubCache() {
   const syncedAt = new Date().toISOString();
 
-  return {
+  return withFreshness({
     syncedAt,
     source: "mock",
     repos: repositories.map((repo) => {
       const linkedWork = mockWorkForRepo(repo.id);
 
-      return {
+      return withFreshness({
         id: repo.id,
         slug: repoSlug(repo),
         name: repo.name,
@@ -285,9 +521,12 @@ export function createMockGithubCache() {
                 title: `${linkedWork.key}: ${linkedWork.title}`,
                 url: `https://github.com/${repoSlug(repo)}/pull/${Number(linkedWork.key.replace("TASK-", ""))}`,
                 branch: linkedWork.branch,
+                baseBranch: "main",
                 author: "codex",
                 mergedBy: "operator",
                 mergedAt: syncedAt,
+                updatedAt: syncedAt,
+                closedAt: syncedAt,
                 mergeCommitSha: `mock-merge-${linkedWork.key.toLowerCase()}`,
                 deliveryEvidence: {
                   tests: { success: true, results: ["Mock CI: success"] },
@@ -323,10 +562,15 @@ export function createMockGithubCache() {
               },
             ]
           : [],
+        checkpoints: {
+          closedPullUpdatedAt: syncedAt,
+          workflowRunCreatedAt: syncedAt,
+          workflowRunUpdatedAt: syncedAt,
+        },
         syncError: "",
-      };
+      }, syncedAt);
     }),
-  };
+  }, syncedAt);
 }
 
 export async function readGithubCache() {
@@ -338,71 +582,181 @@ export async function readGithubCache() {
   });
 }
 
-export async function syncGithubCache({ mock = false } = {}) {
+function fallbackRepoSummary(repo) {
+  return {
+    id: repo.id,
+    slug: repoSlug(repo),
+    name: repo.name,
+    domain: repo.domain,
+    defaultBranch: repo.defaultBranch || "",
+    openPrs: repo.openPrs,
+    openIssues: repo.openIssues || 0,
+    failedRuns: repo.failedRuns,
+    pushedAt: "",
+    latestPulls: [],
+    mergedPulls: [],
+    latestIssues: [],
+    branches: [],
+    failedWorkflowRuns: [],
+  };
+}
+
+async function refreshGithubRepository(repo, previous, {
+  attemptedAt,
+  historyCutoff,
+  requestPage,
+  previousCache,
+}) {
+  const slug = repoSlug(repo);
+  const previousSummary = previous || fallbackRepoSummary(repo);
+  const checkpoints = previous?.checkpoints || {};
+
+  try {
+    const [metadata, pulls, closedPulls, issues, runs, branches] = await Promise.all([
+      requestPage(`/repos/${slug}`),
+      requestPage(`/repos/${slug}/pulls?state=open&per_page=20`),
+      fetchClosedPullsIncremental(slug, requestPage, {
+        updatedSince: checkpoints.closedPullUpdatedAt || "",
+        historyCutoff,
+      }),
+      requestPage(`/repos/${slug}/issues?state=open&per_page=20`),
+      fetchCompletedWorkflowRuns(slug, requestPage, {
+        createdSince: checkpoints.workflowRunCreatedAt || "",
+      }),
+      requestPage(`/repos/${slug}/branches?per_page=100`),
+    ]);
+
+    const incrementalRuns = runs.workflow_runs || [];
+    const incrementalIds = new Set(incrementalRuns.map((run) => String(run.id)));
+    const retainedCandidates = (previousSummary.failedWorkflowRuns || [])
+      .filter((run) => !incrementalIds.has(String(run.id)));
+    const revalidatedRuns = await revalidateFailedWorkflowRuns(slug, retainedCandidates, requestPage);
+    const incomingMergedPulls = summarizeMergedPulls(closedPulls, { historyCutoff });
+    const incomingFailedRuns = summarizeFailedRuns({
+      workflow_runs: [...incrementalRuns, ...revalidatedRuns],
+    });
+    const cutoffTime = timestamp(historyCutoff);
+    const closedPullCheckpoint = Math.max(
+      timestamp(checkpoints.closedPullUpdatedAt),
+      newestTimestamp(closedPulls, ["updated_at", "merged_at"]),
+    );
+    const workflowRunCreatedCheckpoint = Math.max(
+      timestamp(checkpoints.workflowRunCreatedAt),
+      newestTimestamp(incrementalRuns, ["created_at"]),
+    );
+    const workflowRunUpdatedCheckpoint = Math.max(
+      timestamp(checkpoints.workflowRunUpdatedAt),
+      newestTimestamp(incrementalRuns, ["updated_at", "run_started_at"]),
+      newestTimestamp(revalidatedRuns, ["updated_at", "run_started_at"]),
+    );
+    const mergedFailedRuns = mergeByKey(
+      [],
+      incomingFailedRuns,
+      "id",
+      "updatedAt",
+      FAILED_WORKFLOW_RUN_LIMIT,
+    );
+    const summarizedIssues = summarizeIssues(issues);
+
+    return {
+      id: repo.id,
+      slug,
+      name: repo.name,
+      domain: repo.domain,
+      defaultBranch: metadata.default_branch || previousSummary.defaultBranch || "",
+      openPrs: pulls.length,
+      openIssues: summarizedIssues.length,
+      failedRuns: mergedFailedRuns.length,
+      pushedAt: metadata.pushed_at || previousSummary.pushedAt || "",
+      latestPulls: summarizePulls(pulls),
+      mergedPulls: mergeByKey(
+        previousSummary.mergedPulls,
+        incomingMergedPulls,
+        "number",
+        "mergedAt",
+        100,
+        cutoffTime,
+      ),
+      latestIssues: summarizedIssues,
+      branches: summarizeBranches(branches),
+      failedWorkflowRuns: mergedFailedRuns,
+      checkpoints: {
+        closedPullUpdatedAt: isoOrEmpty(closedPullCheckpoint),
+        workflowRunCreatedAt: isoOrEmpty(workflowRunCreatedCheckpoint),
+        workflowRunUpdatedAt: isoOrEmpty(workflowRunUpdatedCheckpoint),
+      },
+      lastAttemptAt: attemptedAt,
+      lastSuccessAt: attemptedAt,
+      syncState: "current",
+      syncError: "",
+    };
+  } catch (error) {
+    const lastSuccessAt = previous?.lastSuccessAt
+      || (previous ? previousCache?.lastSuccessAt || previousCache?.syncedAt || "" : "");
+    return {
+      ...previousSummary,
+      id: repo.id,
+      slug,
+      name: repo.name,
+      domain: repo.domain,
+      lastAttemptAt: attemptedAt,
+      lastSuccessAt,
+      syncState: lastSuccessAt ? "stale" : "degraded",
+      syncError: error.rateLimited
+        ? `${error.message}${error.retryAfter ? ` (retry after ${error.retryAfter}s)` : ""}`
+        : error.message,
+    };
+  }
+}
+
+export async function syncGithubCache({
+  mock = false,
+  request = githubApi,
+  repoList = repositories,
+  now = () => new Date(),
+  concurrency = DEFAULT_SYNC_CONCURRENCY,
+  requestBudget = DEFAULT_SYNC_REQUEST_BUDGET,
+  priorCache,
+  write = writeCache,
+} = {}) {
   if (mock) {
     const cache = createMockGithubCache();
-    await writeCache(cache);
+    await write(cache);
     return cache;
   }
 
-  const syncedAt = new Date().toISOString();
-  const repoSummaries = [];
-
-  for (const repo of repositories) {
-    const slug = repoSlug(repo);
-
-    try {
-      const [metadata, pulls, issues, runs, branches] = await Promise.all([
-        githubApi(`/repos/${slug}`),
-        githubApi(`/repos/${slug}/pulls?state=open&per_page=20`),
-        githubApi(`/repos/${slug}/issues?state=open&per_page=20`),
-        githubApi(`/repos/${slug}/actions/runs?per_page=20&status=completed`),
-        githubApi(`/repos/${slug}/branches?per_page=100`),
-      ]);
-
-      const failedWorkflowRuns = summarizeFailedRuns(runs);
-
-      repoSummaries.push({
-        id: repo.id,
-        slug,
-        name: repo.name,
-        domain: repo.domain,
-        defaultBranch: metadata.default_branch || "",
-        openPrs: pulls.length,
-        openIssues: summarizeIssues(issues).length,
-        failedRuns: failedWorkflowRuns.length,
-        pushedAt: metadata.pushed_at || "",
-        latestPulls: summarizePulls(pulls),
-        latestIssues: summarizeIssues(issues),
-        branches: summarizeBranches(branches),
-        failedWorkflowRuns,
-        syncError: "",
-      });
-    } catch (error) {
-      repoSummaries.push({
-        id: repo.id,
-        slug,
-        name: repo.name,
-        domain: repo.domain,
-        defaultBranch: "",
-        openPrs: repo.openPrs,
-        openIssues: 0,
-        failedRuns: repo.failedRuns,
-        pushedAt: "",
-        latestPulls: [],
-        latestIssues: [],
-        branches: [],
-        failedWorkflowRuns: [],
-        syncError: error.message,
-      });
-    }
-  }
+  const attemptedAt = new Date(now()).toISOString();
+  const historyCutoff = new Date(timestamp(attemptedAt) - MERGED_PULL_HISTORY_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const previousCache = priorCache === undefined ? await readGithubCache() : priorCache;
+  const incrementalCache = ["gh", "github-token"].includes(previousCache?.source) ? previousCache : null;
+  const previousByRepo = new Map((incrementalCache?.repos || []).map((repo) => [repo.id, repo]));
+  const budget = createGithubRequestBudget(requestBudget);
+  const requestPage = (endpoint) => budget.request(endpoint, request);
+  const repoSummaries = await mapWithConcurrency(repoList, concurrency, (repo) => (
+    refreshGithubRepository(repo, previousByRepo.get(repo.id), {
+      attemptedAt,
+      historyCutoff,
+      requestPage,
+      previousCache: incrementalCache,
+    })
+  ));
+  const hasFailures = repoSummaries.some((repo) => repo.syncState !== "current");
+  const hasSuccess = repoSummaries.some((repo) => repo.syncState === "current");
+  const previousSuccessAt = incrementalCache?.lastSuccessAt || incrementalCache?.syncedAt || "";
+  const lastSuccessAt = hasSuccess ? attemptedAt : previousSuccessAt;
 
   const cache = {
-    syncedAt,
+    syncedAt: hasSuccess ? attemptedAt : previousSuccessAt,
+    lastAttemptAt: attemptedAt,
+    lastSuccessAt,
+    syncState: !hasSuccess && hasFailures
+      ? "degraded"
+      : hasFailures ? "partially_degraded" : "current",
+    requestBudget: { used: budget.used, limit: budget.limit },
+    historyCutoff,
     source: process.env.GITHUB_TOKEN ? "github-token" : "gh",
     repos: repoSummaries,
   };
-  await writeCache(cache);
+  await write(cache);
   return cache;
 }

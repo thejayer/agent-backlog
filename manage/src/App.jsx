@@ -575,6 +575,58 @@ function formatProviderState(enabled, label) {
   return enabled ? `${label} on` : `${label} off`;
 }
 
+function githubFreshnessFromState(syncState, source = "") {
+  if (syncState === "current" || (!syncState && ["mock", "seed"].includes(source))) {
+    return "fresh";
+  }
+
+  if (syncState === "stale" || syncState === "partially_degraded" || syncState === "degraded") {
+    return "stale";
+  }
+
+  return "unknown";
+}
+
+function formatGithubSyncValue(githubSync) {
+  const source = githubSync?.source || "checking";
+  const freshness = githubSync?.freshness || githubFreshnessFromState(githubSync?.syncState, source);
+
+  if (freshness === "fresh") {
+    return `Fresh · ${source}`;
+  }
+
+  if (freshness === "stale") {
+    return `Stale · ${source}`;
+  }
+
+  return source;
+}
+
+function githubSyncTone(githubSync) {
+  const freshness = githubSync?.freshness || githubFreshnessFromState(githubSync?.syncState, githubSync?.source);
+  if (freshness === "fresh") {
+    return "ready";
+  }
+  if (freshness === "stale") {
+    return "stale";
+  }
+  return "info";
+}
+
+function formatRepoSyncFreshness(repo, cache) {
+  const freshness = githubFreshnessFromState(repo?.syncState, cache?.source);
+  if (freshness === "fresh") {
+    return "Fresh";
+  }
+  if (repo?.syncState === "degraded") {
+    return "Degraded";
+  }
+  if (freshness === "stale") {
+    return "Stale";
+  }
+  return "Not synced";
+}
+
 function authErrorFromUrl() {
   if (typeof window === "undefined") {
     return "";
@@ -1358,7 +1410,17 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
       const payload = await syncGithub({ mock });
       setGithubCache(payload.github);
       setGithubState("idle");
-      setGithubMessage(payload.github.source === "gh" ? "GitHub sync complete" : "Mock GitHub cache refreshed");
+      const freshness = payload.github.syncState === "current" || payload.github.source === "mock"
+        ? "fresh"
+        : "stale";
+      setGithubMessage(
+        payload.github.source === "gh"
+          ? `GitHub sync ${freshness}`
+          : payload.github.source === "github-token"
+            ? `GitHub sync ${freshness}`
+            : `Mock GitHub cache ${freshness}`,
+      );
+      await refreshSystemStatus();
     } catch (error) {
       setGithubState("failed");
       setGithubMessage(error.message);
@@ -3114,7 +3176,7 @@ function SystemStatusPanel({ systemStatus, systemState, systemMessage, onRefresh
   const baseUrl = systemStatus?.baseUrl || manageOrigin();
   const githubLoginEnabled = Boolean(systemStatus?.auth?.providers?.github);
   const tokenLoginEnabled = Boolean(systemStatus?.auth?.providers?.token);
-  const githubSyncSource = systemStatus?.githubSync?.source || "checking";
+  const githubSync = systemStatus?.githubSync;
   const backupRetention = systemStatus?.storage?.backups?.retention;
   const backupsEnabled = Boolean(systemStatus?.storage?.backups?.enabled);
 
@@ -3130,7 +3192,7 @@ function SystemStatusPanel({ systemStatus, systemState, systemMessage, onRefresh
           <SystemStatusItem label="Storage" value={formatStorageKind(storageKind)} tone={storageKind === "firestore" ? "ready" : "info"} />
           <SystemStatusItem label="Auth" value={formatProviderState(githubLoginEnabled, "GitHub")} tone={githubLoginEnabled ? "ready" : "info"} />
           <SystemStatusItem label="Operator token" value={formatProviderState(tokenLoginEnabled, "Break-glass")} tone={tokenLoginEnabled ? "ready" : "blocked"} />
-          <SystemStatusItem label="GitHub sync" value={githubSyncSource} tone={githubSyncSource === "github-token" ? "ready" : "info"} />
+          <SystemStatusItem label="GitHub sync" value={formatGithubSyncValue(githubSync)} tone={githubSyncTone(githubSync)} />
           <SystemStatusItem
             label="Backups"
             value={backupsEnabled ? `Last ${backupRetention}` : "Off"}
@@ -3224,6 +3286,7 @@ function RepoHealth({
   issueImportState,
 }) {
   const githubByRepo = new Map((githubCache?.repos || []).map((repo) => [repo.id, repo]));
+  const cacheFreshness = githubFreshnessFromState(githubCache?.syncState, githubCache?.source);
 
   return (
     <section className="repo-health" aria-label="Repository health">
@@ -3232,7 +3295,7 @@ function RepoHealth({
           <h2>Repo health</h2>
           <p>
             {githubCache?.syncedAt
-              ? `${githubMessage}. Last sync ${new Date(githubCache.syncedAt).toLocaleString()}.`
+              ? `${githubMessage}. Cache ${cacheFreshness}. Last sync ${new Date(githubCache.syncedAt).toLocaleString()}.`
               : githubMessage}
           </p>
         </div>
@@ -3251,9 +3314,11 @@ function RepoHealth({
           </button>
         </div>
       </div>
-      <div className="repo-sync-note">
+      <div className={`repo-sync-note sync-${cacheFreshness}`}>
         <span className="dot" />
-        {githubCache?.syncedAt ? `Last sync ${formatDateTime(githubCache.syncedAt)}` : githubMessage}
+        {githubCache?.syncedAt
+          ? `${cacheFreshness === "stale" ? "Stale" : cacheFreshness === "fresh" ? "Fresh" : "Unknown"} · Last sync ${formatDateTime(githubCache.syncedAt)}`
+          : githubMessage}
       </div>
       <div className="repo-grid">
         {repositories.map((repo) => {
@@ -3267,8 +3332,10 @@ function RepoHealth({
             branches: Number.isFinite(branchCount) ? branchCount : 0,
             defaultBranch: syncedRepo?.defaultBranch || "main",
             syncError: syncedRepo?.syncError || "",
+            freshness: formatRepoSyncFreshness(syncedRepo, githubCache),
           };
           const repoUrl = `https://github.com/${repo.owner || "your-org"}/${repo.name}`;
+          const freshnessTone = String(repoStats.freshness).toLowerCase();
 
           return (
             <article key={repo.id} className="repo-tile">
@@ -3277,7 +3344,10 @@ function RepoHealth({
                   <div className="rt-name">{repo.name}</div>
                   <div className="rt-domain">{repo.domain || repo.id}</div>
                 </div>
-                <StatusPill status={repoHealthStatus(repo)} />
+                <div className="repo-tile-badges">
+                  <span className={`repo-freshness freshness-${freshnessTone}`}>{repoStats.freshness}</span>
+                  <StatusPill status={repoHealthStatus(repo)} />
+                </div>
               </div>
               <p>{repo.description}</p>
               {repoStats.syncError ? <small className="repo-sync-error">{repoStats.syncError}</small> : null}

@@ -1943,6 +1943,13 @@ textarea {
   --pill-color: var(--manage-red);
 }
 
+.status-stale {
+  --pill-bg: color-mix(in srgb, var(--manage-yellow) 16%, transparent);
+  --pill-border: color-mix(in srgb, var(--manage-yellow) 32%, transparent);
+  --pill-color: var(--manage-yellow);
+  --pill-ink: var(--manage-yellow);
+}
+
 .readiness {
   display: inline-grid;
   grid-template-columns: 42px auto;
@@ -2527,6 +2534,53 @@ code {
   height: 7px;
   border-radius: 999px;
   background: var(--manage-green);
+}
+
+.repo-sync-note.sync-stale .dot {
+  background: var(--manage-yellow);
+}
+
+.repo-sync-note.sync-unknown .dot {
+  background: var(--manage-muted);
+}
+
+.repo-tile-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.repo-freshness {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--manage-muted) 28%, transparent);
+  border-radius: 8px;
+  background: var(--manage-surface);
+  color: var(--manage-muted);
+  font-size: 11px;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.repo-freshness.freshness-fresh {
+  border-color: color-mix(in srgb, var(--manage-green) 28%, transparent);
+  background: color-mix(in srgb, var(--manage-green) 12%, transparent);
+  color: var(--manage-green);
+}
+
+.repo-freshness.freshness-stale {
+  border-color: color-mix(in srgb, var(--manage-yellow) 32%, transparent);
+  background: color-mix(in srgb, var(--manage-yellow) 16%, transparent);
+  color: var(--manage-yellow);
+}
+
+.repo-freshness.freshness-degraded {
+  border-color: color-mix(in srgb, var(--manage-red) 28%, transparent);
+  background: color-mix(in srgb, var(--manage-red) 12%, transparent);
+  color: var(--manage-red);
 }
 
 .repo-grid {

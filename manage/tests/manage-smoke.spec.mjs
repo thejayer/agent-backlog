@@ -872,6 +872,9 @@ test("creates exports and restores backlog backups", async ({ page, request }) =
   expect(restoredPayload.workItems.find((item) => item.key === "TASK-101").title).toBe(originalTitle);
 
   await page.reload();
+  await expect(page).toHaveURL(/view=repos/);
+  await expect(page.getByRole("heading", { name: "Repository health", level: 1 })).toBeVisible();
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Backlog" }).click();
   await expect(page.locator(".detail-panel")).toContainText(originalTitle);
 });
 
@@ -1099,15 +1102,17 @@ test("initiative timeline drills from completed packet through merge and deploym
 });
 
 test("restores Backlog filters and packet selection from the URL", async ({ page }) => {
+  const repoFilter = page.getByLabel("Repo", { exact: true });
+
   await page.goto("/?view=review&packet=TASK-101&auth_error=retry");
-  await expect(page.getByRole("heading", { name: "Review queue" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review queue", level: 1 })).toBeVisible();
   await expect(page).toHaveURL(/view=review/);
   await expect(page).toHaveURL(/packet=TASK-101/);
   await expect(page).toHaveURL(/auth_error=retry/);
 
   await page.goto("/?repo=web-app&status=ready_for_agent&label=bug&q=contact&packet=TASK-101");
   await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
-  await expect(page.getByLabel("Repo")).toHaveValue("web-app");
+  await expect(repoFilter).toHaveValue("web-app");
   await expect(page.getByLabel("Status")).toHaveValue("ready_for_agent");
   await expect(page.getByLabel("Label")).toHaveValue("bug");
   await expect(page.getByLabel("Search packets")).toHaveValue("contact");
@@ -1115,10 +1120,10 @@ test("restores Backlog filters and packet selection from the URL", async ({ page
   await expect(page).toHaveURL(/repo=web-app/);
   await expect(page).toHaveURL(/packet=TASK-101/);
 
-  await page.getByLabel("Repo").selectOption("api-service");
+  await repoFilter.selectOption("api-service");
   await expect(page).toHaveURL(/repo=api-service/);
   await page.reload();
-  await expect(page.getByLabel("Repo")).toHaveValue("api-service");
+  await expect(repoFilter).toHaveValue("api-service");
   await expect(page.getByLabel("Search packets")).toHaveValue("contact");
   expect(page.url()).not.toMatch(CSC_LEAKAGE);
 });
@@ -1127,7 +1132,7 @@ test("ignores CSC packet keys in the URL and keeps TASK selection", async ({ pag
   await page.goto("/?packet=CSC-433&repo=csc-workspace");
 
   await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
-  await expect(page.getByLabel("Repo")).toHaveValue("all");
+  await expect(page.getByLabel("Repo", { exact: true })).toHaveValue("all");
   await expect(page.locator(".work-row.is-selected")).toContainText("TASK-101");
   await expect(page).not.toHaveURL(/CSC-/);
   await expect(page).not.toHaveURL(/csc-workspace/);
@@ -1136,9 +1141,11 @@ test("ignores CSC packet keys in the URL and keeps TASK selection", async ({ pag
 
 test("saves, applies, and reloads a named Backlog view without CSC leakage", async ({ page, request }) => {
   const viewName = `Ready web-app ${Date.now()}`;
+  const repoFilter = page.getByLabel("Repo", { exact: true });
+  const savedView = page.getByLabel("Saved view", { exact: true });
   await page.goto("/");
 
-  await page.getByLabel("Repo").selectOption("web-app");
+  await repoFilter.selectOption("web-app");
   await page.getByLabel("Status").selectOption("ready_for_agent");
   await page.getByLabel("Label").selectOption("bug");
   await page.getByLabel("Search packets").fill("import");
@@ -1147,15 +1154,15 @@ test("saves, applies, and reloads a named Backlog view without CSC leakage", asy
   await page.locator("[data-saved-view-name]").fill(viewName);
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByLabel("Saved views")).toContainText(viewName);
-  await expect(page.getByLabel("Saved view")).toHaveValue(/saved-view-/);
+  await expect(savedView).toHaveValue(/saved-view-/);
 
-  await page.getByLabel("Repo").selectOption("all");
+  await repoFilter.selectOption("all");
   await page.getByLabel("Status").selectOption("all");
   await page.getByLabel("Search packets").fill("");
-  await expect(page.getByLabel("Saved view")).toHaveValue("");
+  await expect(savedView).toHaveValue("");
 
-  await page.getByLabel("Saved view").selectOption({ label: viewName });
-  await expect(page.getByLabel("Repo")).toHaveValue("web-app");
+  await savedView.selectOption({ label: viewName });
+  await expect(repoFilter).toHaveValue("web-app");
   await expect(page.getByLabel("Status")).toHaveValue("ready_for_agent");
   await expect(page.getByLabel("Label")).toHaveValue("bug");
   await expect(page.getByLabel("Search packets")).toHaveValue("import");
@@ -1164,8 +1171,8 @@ test("saves, applies, and reloads a named Backlog view without CSC leakage", asy
   await expect(page).toHaveURL(/q=import/);
 
   await page.reload();
-  await expect(page.getByLabel("Repo")).toHaveValue("web-app");
-  await page.getByLabel("Saved view").selectOption({ label: viewName });
+  await expect(repoFilter).toHaveValue("web-app");
+  await savedView.selectOption({ label: viewName });
   await expect(page.getByLabel("Search packets")).toHaveValue("import");
 
   const listed = await (await request.get("/api/saved-views")).json();

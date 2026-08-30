@@ -3,6 +3,17 @@ import { workItems as seedWorkItems } from "../src/data/workItems.mjs";
 
 const CSC_LEAKAGE = /Commerce Street|csc-workspace|csc-crm|CSC-|COM-|commercestreet|Harbor|RegVault|gcloud|linear\.app\/.*COM-/i;
 
+function backlogFilters(page) {
+  return {
+    repo: page.getByLabel("Repo", { exact: true }),
+    status: page.getByLabel("Status", { exact: true }),
+    label: page.getByLabel("Label", { exact: true }),
+    search: page.getByLabel("Search packets"),
+    savedView: page.getByLabel("Saved view", { exact: true }),
+    savedViews: page.getByRole("group", { name: "Saved views" }),
+  };
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise((complete) => { resolve = complete; });
@@ -1102,7 +1113,7 @@ test("initiative timeline drills from completed packet through merge and deploym
 });
 
 test("restores Backlog filters and packet selection from the URL", async ({ page }) => {
-  const repoFilter = page.getByLabel("Repo", { exact: true });
+  const filters = backlogFilters(page);
 
   await page.goto("/?view=review&packet=TASK-101&auth_error=retry");
   await expect(page.getByRole("heading", { name: "Review queue", level: 1 })).toBeVisible();
@@ -1112,19 +1123,19 @@ test("restores Backlog filters and packet selection from the URL", async ({ page
 
   await page.goto("/?repo=web-app&status=ready_for_agent&label=bug&q=contact&packet=TASK-101");
   await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
-  await expect(repoFilter).toHaveValue("web-app");
-  await expect(page.getByLabel("Status")).toHaveValue("ready_for_agent");
-  await expect(page.getByLabel("Label")).toHaveValue("bug");
-  await expect(page.getByLabel("Search packets")).toHaveValue("contact");
+  await expect(filters.repo).toHaveValue("web-app");
+  await expect(filters.status).toHaveValue("ready_for_agent");
+  await expect(filters.label).toHaveValue("bug");
+  await expect(filters.search).toHaveValue("contact");
   await expect(page.locator(".work-row.is-selected")).toContainText("TASK-101");
   await expect(page).toHaveURL(/repo=web-app/);
   await expect(page).toHaveURL(/packet=TASK-101/);
 
-  await repoFilter.selectOption("api-service");
+  await filters.repo.selectOption("api-service");
   await expect(page).toHaveURL(/repo=api-service/);
   await page.reload();
-  await expect(repoFilter).toHaveValue("api-service");
-  await expect(page.getByLabel("Search packets")).toHaveValue("contact");
+  await expect(filters.repo).toHaveValue("api-service");
+  await expect(filters.search).toHaveValue("contact");
   expect(page.url()).not.toMatch(CSC_LEAKAGE);
 });
 
@@ -1132,7 +1143,7 @@ test("ignores CSC packet keys in the URL and keeps TASK selection", async ({ pag
   await page.goto("/?packet=CSC-433&repo=csc-workspace");
 
   await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
-  await expect(page.getByLabel("Repo", { exact: true })).toHaveValue("all");
+  await expect(backlogFilters(page).repo).toHaveValue("all");
   await expect(page.locator(".work-row.is-selected")).toContainText("TASK-101");
   await expect(page).not.toHaveURL(/CSC-/);
   await expect(page).not.toHaveURL(/csc-workspace/);
@@ -1141,39 +1152,38 @@ test("ignores CSC packet keys in the URL and keeps TASK selection", async ({ pag
 
 test("saves, applies, and reloads a named Backlog view without CSC leakage", async ({ page, request }) => {
   const viewName = `Ready web-app ${Date.now()}`;
-  const repoFilter = page.getByLabel("Repo", { exact: true });
-  const savedView = page.getByLabel("Saved view", { exact: true });
+  const filters = backlogFilters(page);
   await page.goto("/");
 
-  await repoFilter.selectOption("web-app");
-  await page.getByLabel("Status").selectOption("ready_for_agent");
-  await page.getByLabel("Label").selectOption("bug");
-  await page.getByLabel("Search packets").fill("import");
+  await filters.repo.selectOption("web-app");
+  await filters.status.selectOption("ready_for_agent");
+  await filters.label.selectOption("bug");
+  await filters.search.fill("import");
 
   await page.getByRole("button", { name: "Save view" }).click();
   await page.locator("[data-saved-view-name]").fill(viewName);
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByLabel("Saved views")).toContainText(viewName);
-  await expect(savedView).toHaveValue(/saved-view-/);
+  await expect(filters.savedViews).toContainText(viewName);
+  await expect(filters.savedView).toHaveValue(/saved-view-/);
 
-  await repoFilter.selectOption("all");
-  await page.getByLabel("Status").selectOption("all");
-  await page.getByLabel("Search packets").fill("");
-  await expect(savedView).toHaveValue("");
+  await filters.repo.selectOption("all");
+  await filters.status.selectOption("all");
+  await filters.search.fill("");
+  await expect(filters.savedView).toHaveValue("");
 
-  await savedView.selectOption({ label: viewName });
-  await expect(repoFilter).toHaveValue("web-app");
-  await expect(page.getByLabel("Status")).toHaveValue("ready_for_agent");
-  await expect(page.getByLabel("Label")).toHaveValue("bug");
-  await expect(page.getByLabel("Search packets")).toHaveValue("import");
+  await filters.savedView.selectOption({ label: viewName });
+  await expect(filters.repo).toHaveValue("web-app");
+  await expect(filters.status).toHaveValue("ready_for_agent");
+  await expect(filters.label).toHaveValue("bug");
+  await expect(filters.search).toHaveValue("import");
   await expect(page).toHaveURL(/repo=web-app/);
   await expect(page).toHaveURL(/status=ready_for_agent/);
   await expect(page).toHaveURL(/q=import/);
 
   await page.reload();
-  await expect(repoFilter).toHaveValue("web-app");
-  await savedView.selectOption({ label: viewName });
-  await expect(page.getByLabel("Search packets")).toHaveValue("import");
+  await expect(filters.repo).toHaveValue("web-app");
+  await filters.savedView.selectOption({ label: viewName });
+  await expect(filters.search).toHaveValue("import");
 
   const listed = await (await request.get("/api/saved-views")).json();
   expect(listed.savedViews.some((view) => view.name === viewName)).toBe(true);

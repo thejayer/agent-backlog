@@ -193,7 +193,7 @@ test("Today attention inbox groups exceptions, deep-links, and has no CSC leakag
   await inbox.getByRole("button", { name: /Handoff/ }).click();
   const handoffCard = inbox.locator(".attention-item").filter({ hasText: "TASK-104" });
   await handoffCard.getByRole("button", { name: "Complete handoff" }).click();
-  await expect(page.getByRole("heading", { name: "Review queue" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review queue", level: 1 })).toBeVisible();
   await expect(page.getByLabel("Review queue")).toContainText("TASK-104");
 });
 

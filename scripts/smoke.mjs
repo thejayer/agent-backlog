@@ -283,6 +283,24 @@ try {
       && operatorOverrideBody.workItem?.completionOverride?.reason === "Planning packet completed without a code delivery.",
   );
 
+  const mockSync = await operatorAuthed("/api/github/sync", {
+    method: "POST",
+    body: JSON.stringify({ mock: true }),
+  });
+  const mockSyncBody = await mockSync.json();
+  check("mock GitHub sync returns 200", mockSync.status === 200);
+  check("mock GitHub sync is fresh", mockSyncBody.github?.source === "mock" && mockSyncBody.github?.syncState === "current");
+  check(
+    "mock GitHub sync uses TASK keys and generic repos",
+    mockSyncBody.github?.repos?.some((repo) => repo.slug === "your-org/web-app")
+      && mockSyncBody.github?.repos?.some((repo) => repo.mergedPulls?.some((pull) => String(pull.title || "").includes("TASK-101")))
+      && !JSON.stringify(mockSyncBody).match(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault/i),
+  );
+
+  const systemStatus = await operatorAuthed("/api/system/status");
+  const systemStatusBody = await systemStatus.json();
+  check("system status surfaces GitHub freshness", systemStatusBody.githubSync?.freshness === "fresh");
+
   const md = await (await agentAuthed("/agent/TASK-101.md")).text();
   check("markdown packet renders", md.includes("# TASK-101") && md.includes("## Acceptance Criteria"));
 

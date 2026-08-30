@@ -103,8 +103,11 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
   Agent writebacks that claim `done` without verified evidence are rejected.
 - **Readiness + priority ranking** — `next` hands out the highest-priority,
   most-complete `ready_for_agent` packet first.
-- **GitHub sync (optional)** — pull open PRs/issues/branches/failed runs per repo
-  and auto-link them to packets; import issues as draft packets.
+- **GitHub sync (optional)** — incremental, freshness-aware cache of open
+  PRs/issues/branches, merged PRs, and failed runs. Syncs skip already-fresh
+  pages, stay inside a request budget, and surface stale vs fresh on Repos /
+  system status. Auto-link packets and import issues; `{"mock":true}` works
+  without a GitHub token.
 
 ## API
 
@@ -125,7 +128,7 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
 | GET | `/agent/{key}.md` | Packet as a Markdown prompt |
 | GET | `/agent/instructions.md` | Agent onboarding instructions |
 | GET | `/api/agent/bootstrap` | Machine-readable endpoint + command map |
-| POST | `/api/github/sync` | Refresh GitHub cache (`{"mock":true}` for demo) |
+| POST | `/api/github/sync` | Incremental GitHub cache refresh (`{"mock":true}` for demo) |
 | GET/POST | `/api/backups` | List / create state snapshots |
 
 All routes except the public ones require a signed operator session cookie or

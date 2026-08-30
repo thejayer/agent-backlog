@@ -565,6 +565,10 @@ test("exposes deployment health and auth provider config", async ({ playwright, 
   expect(statusPayload.storage.backups.enabled).toBe(true);
   expect(statusPayload.storage.backups.snapshotsDir).toContain("snapshots");
   expect(statusPayload.auth.github.available).toBe(false);
+  expect(statusPayload.githubSync.freshness).toMatch(/fresh|stale|unknown/);
+  expect(statusPayload.githubSync).toHaveProperty("syncState");
+  expect(statusPayload.githubSync).toHaveProperty("lastSuccessAt");
+  expect(JSON.stringify(statusPayload)).not.toMatch(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault/i);
 });
 
 test("creates exports and restores backlog backups", async ({ page, request }) => {
@@ -618,6 +622,12 @@ test("refreshes read-only GitHub cache", async ({ page, request }) => {
   expect(payload.github.repos.length).toBeGreaterThan(0);
   expect(payload.github.repos[0]).toHaveProperty("openPrs");
   expect(payload.github.repos[0]).toHaveProperty("branches");
+  expect(payload.github).toMatchObject({
+    source: "mock",
+    syncState: "current",
+  });
+  expect(payload.github.repos.every((repo) => repo.syncState === "current")).toBe(true);
+  expect(JSON.stringify(payload)).not.toMatch(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault/i);
 
   await page.goto("/");
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Repos" }).click();
@@ -625,13 +635,16 @@ test("refreshes read-only GitHub cache", async ({ page, request }) => {
   await expect(page.getByRole("button", { name: "Link packets" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Import issues" })).toBeVisible();
   await expect(page.locator(".repo-tile")).toHaveCount(6);
+  await expect(page.getByLabel("System status")).toContainText("Fresh");
+  await expect(page.getByLabel("Repository health")).toContainText("Fresh");
 
-  const crmTile = page.locator(".repo-tile").filter({ hasText: "web-app" });
-  await expect(crmTile).toContainText("PRs");
-  await expect(crmTile).toContainText("Issues");
-  await expect(crmTile).toContainText("Failed");
-  await expect(crmTile).toContainText("main");
-  await expect(crmTile.getByRole("link", { name: "Open repo" })).toHaveAttribute("href", /github\.com\/your-org\/web-app/);
+  const webAppTile = page.locator(".repo-tile").filter({ hasText: "web-app" });
+  await expect(webAppTile).toContainText("PRs");
+  await expect(webAppTile).toContainText("Issues");
+  await expect(webAppTile).toContainText("Failed");
+  await expect(webAppTile).toContainText("main");
+  await expect(webAppTile).toContainText("Fresh");
+  await expect(webAppTile.getByRole("link", { name: "Open repo" })).toHaveAttribute("href", /github\.com\/your-org\/web-app/);
 });
 
 test("creates a GitHub issue handoff for a work packet", async ({ page, request }) => {

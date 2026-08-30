@@ -15,7 +15,7 @@ import { authorizeManageRequest, managePermissions, requireBrowserWriteProtectio
 import { findGithubMatchesForItem, hasGithubMatches } from "./githubLinks.mjs";
 import { createGithubIssueForWorkItem } from "./githubIssues.mjs";
 import { resolveCompletionGithubEvidence } from "./completionWrite.mjs";
-import { fetchPullRequestDeliveryEvidence, readGithubCache, syncGithubCache } from "./githubSync.mjs";
+import { fetchPullRequestDeliveryEvidence, readGithubCache, summarizeGithubSyncStatus, syncGithubCache } from "./githubSync.mjs";
 import { completeGithubLogin, getGithubLoginStart } from "./githubOAuth.mjs";
 import { createStateSnapshot, getStorageStatus, listStateSnapshots, restoreStateSnapshot } from "./storage.mjs";
 import {
@@ -315,9 +315,7 @@ async function handleRoute(req, res, baseUrl) {
         providers: authProviderSummary(),
         github: githubStatusSummary(),
       },
-      githubSync: {
-        source: process.env.GITHUB_TOKEN ? "github-token" : "gh-cli",
-      },
+      githubSync: summarizeGithubSyncStatus(await readGithubCache()),
     });
     return true;
   }

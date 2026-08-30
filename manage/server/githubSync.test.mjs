@@ -4,6 +4,7 @@ import {
   fetchClosedPullsIncremental,
   fetchCompletedWorkflowRuns,
   fetchPullRequestDeliveryEvidence,
+  revalidateFailedWorkflowRuns,
   summarizeGithubSyncStatus,
   summarizeMergedPulls,
   syncGithubCache,
@@ -336,6 +337,7 @@ describe("incremental GitHub cache refresh", () => {
           name: "CI",
           status: "completed",
           conclusion: "success",
+          created_at: "2026-08-03T10:00:00.000Z",
           updated_at: "2026-08-03T10:00:00.000Z",
         }],
       }),
@@ -353,20 +355,124 @@ describe("incremental GitHub cache refresh", () => {
     expect(cache.repos[0].failedWorkflowRuns).toEqual([]);
   });
 
-  it("stops workflow pagination once it reaches already-fresh runs", async () => {
-    const request = vi.fn(async () => ({
-      workflow_runs: [
-        { id: 2, updated_at: "2026-08-03T10:00:00.000Z", conclusion: "failure" },
-        { id: 1, updated_at: "2026-08-01T10:00:00.000Z", conclusion: "failure" },
-      ],
+  it("stops workflow pagination on created_at, not updated_at", async () => {
+    const pageOne = Array.from({ length: 100 }, (_, index) => ({
+      id: 200 + index,
+      created_at: "2026-08-03T10:00:00.000Z",
+      updated_at: index === 0 ? "2026-08-01T00:00:00.000Z" : "2026-08-03T10:00:00.000Z",
+      conclusion: "success",
     }));
+    const pageTwo = [
+      { id: 2, created_at: "2026-08-03T09:00:00.000Z", updated_at: "2026-08-03T09:00:00.000Z", conclusion: "failure" },
+      { id: 1, created_at: "2026-08-01T10:00:00.000Z", updated_at: "2026-08-01T10:00:00.000Z", conclusion: "failure" },
+    ];
+    const request = vi.fn()
+      .mockResolvedValueOnce({ workflow_runs: pageOne })
+      .mockResolvedValueOnce({ workflow_runs: pageTwo });
 
     const runs = await fetchCompletedWorkflowRuns("your-org/web-app", request, {
-      updatedSince: "2026-08-02T00:00:00.000Z",
+      createdSince: "2026-08-02T00:00:00.000Z",
     });
 
-    expect(request).toHaveBeenCalledTimes(1);
-    expect(runs.workflow_runs.map((run) => run.id)).toEqual([2]);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(runs.workflow_runs.map((run) => run.id)).toEqual([
+      ...pageOne.map((run) => run.id),
+      2,
+    ]);
+  });
+
+  it("revalidates a cached failure by id so a later successful re-run is dropped", async () => {
+    const request = vi.fn(async (endpoint) => {
+      if (endpoint === "/repos/your-org/web-app/actions/runs/12") {
+        return {
+          id: 12,
+          name: "CI",
+          status: "completed",
+          conclusion: "success",
+          created_at: "2026-07-01T00:00:00.000Z",
+          updated_at: "2026-08-03T10:00:00.000Z",
+        };
+      }
+      throw new Error(`Unexpected endpoint: ${endpoint}`);
+    });
+
+    await expect(revalidateFailedWorkflowRuns(
+      "your-org/web-app",
+      [{ id: 12, name: "CI", conclusion: "failure", updatedAt: "2026-08-01T00:00:00.000Z" }],
+      request,
+    )).resolves.toEqual([]);
+    expect(request).toHaveBeenCalledWith("/repos/your-org/web-app/actions/runs/12");
+  });
+
+  it("drops a cached failed run after a re-run succeeds off the first list page", async () => {
+    const repo = testRepo("web-app");
+    const priorCache = {
+      source: "gh",
+      syncedAt: "2026-08-02T00:00:00.000Z",
+      repos: [{
+        ...repo,
+        slug: "your-org/web-app",
+        mergedPulls: [],
+        latestPulls: [],
+        latestIssues: [],
+        branches: [],
+        failedRuns: 1,
+        failedWorkflowRuns: [{
+          id: 12,
+          name: "CI",
+          conclusion: "failure",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+        }],
+        checkpoints: {
+          workflowRunCreatedAt: "2026-08-02T00:00:00.000Z",
+          workflowRunUpdatedAt: "2026-08-02T00:00:00.000Z",
+        },
+      }],
+    };
+    const newerCreatedRuns = Array.from({ length: 100 }, (_, index) => ({
+      id: 200 + index,
+      name: "Lint",
+      status: "completed",
+      conclusion: "success",
+      created_at: "2026-08-03T09:00:00.000Z",
+      updated_at: "2026-08-01T12:00:00.000Z",
+    }));
+    const request = successfulSyncRequest({
+      "/repos/your-org/web-app/actions/runs?status=completed&per_page=100&page=1": async () => ({
+        workflow_runs: newerCreatedRuns,
+      }),
+      "/repos/your-org/web-app/actions/runs?status=completed&per_page=100&page=2": async () => ({
+        workflow_runs: [{
+          id: 12,
+          name: "CI",
+          status: "completed",
+          conclusion: "success",
+          created_at: "2026-07-01T00:00:00.000Z",
+          updated_at: "2026-08-03T10:00:00.000Z",
+        }],
+      }),
+      "/repos/your-org/web-app/actions/runs/12": async () => ({
+        id: 12,
+        name: "CI",
+        status: "completed",
+        conclusion: "success",
+        created_at: "2026-07-01T00:00:00.000Z",
+        updated_at: "2026-08-03T10:00:00.000Z",
+      }),
+    });
+
+    const cache = await syncGithubCache({
+      repoList: [repo],
+      priorCache,
+      request,
+      now,
+      write: vi.fn(),
+    });
+
+    expect(cache.repos[0].failedRuns).toBe(0);
+    expect(cache.repos[0].failedWorkflowRuns).toEqual([]);
+    expect(request).toHaveBeenCalledWith("/repos/your-org/web-app/actions/runs/12");
+    expect(JSON.stringify(cache)).not.toMatch(CSC_LEAKAGE);
   });
 
   it("bounds repository concurrency and stops at the shared request budget", async () => {

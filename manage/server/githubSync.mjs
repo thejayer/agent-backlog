@@ -389,10 +389,10 @@ function summarizeFailedRuns(runsPayload) {
 export async function fetchCompletedWorkflowRuns(
   slug,
   requestPage = githubApi,
-  { updatedSince = "", maxPages = WORKFLOW_RUNS_MAX_PAGES } = {},
+  { createdSince = "", maxPages = WORKFLOW_RUNS_MAX_PAGES } = {},
 ) {
   const workflowRuns = [];
-  const updatedSinceTime = timestamp(updatedSince);
+  const createdSinceTime = timestamp(createdSince);
 
   for (let page = 1; page <= maxPages; page += 1) {
     const payload = await requestPage(
@@ -401,8 +401,10 @@ export async function fetchCompletedWorkflowRuns(
     const pageRuns = Array.isArray(payload?.workflow_runs) ? payload.workflow_runs : [];
     workflowRuns.push(...pageRuns);
 
-    const reachedKnownData = updatedSinceTime > 0
-      && pageRuns.some((run) => timestamp(run.updated_at) <= updatedSinceTime);
+    // The Actions list is newest-created first and has no updated_at sort.
+    // Stop on created_at so a stale updated_at on page 1 cannot hide later rows.
+    const reachedKnownData = createdSinceTime > 0
+      && pageRuns.some((run) => timestamp(run.created_at) <= createdSinceTime);
 
     if (pageRuns.length < WORKFLOW_RUNS_PAGE_SIZE || reachedKnownData) {
       break;
@@ -410,10 +412,34 @@ export async function fetchCompletedWorkflowRuns(
   }
 
   return {
-    workflow_runs: updatedSinceTime > 0
-      ? workflowRuns.filter((run) => timestamp(run.updated_at) > updatedSinceTime)
+    workflow_runs: createdSinceTime > 0
+      ? workflowRuns.filter((run) => timestamp(run.created_at) > createdSinceTime)
       : workflowRuns,
   };
+}
+
+export async function revalidateFailedWorkflowRuns(slug, failedRuns = [], request = githubApi) {
+  const unique = [];
+  const seen = new Set();
+
+  for (const failed of failedRuns) {
+    const id = String(failed?.id || "").trim();
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    unique.push(id);
+  }
+
+  const results = await Promise.all(unique.map(async (id) => {
+    try {
+      return await request(`/repos/${slug}/actions/runs/${id}`);
+    } catch {
+      return null;
+    }
+  }));
+
+  return results.filter(isFailedWorkflowRun);
 }
 
 function summarizeBranches(branches) {
@@ -538,6 +564,7 @@ export function createMockGithubCache() {
           : [],
         checkpoints: {
           closedPullUpdatedAt: syncedAt,
+          workflowRunCreatedAt: syncedAt,
           workflowRunUpdatedAt: syncedAt,
         },
         syncError: "",
@@ -594,27 +621,36 @@ async function refreshGithubRepository(repo, previous, {
       }),
       requestPage(`/repos/${slug}/issues?state=open&per_page=20`),
       fetchCompletedWorkflowRuns(slug, requestPage, {
-        updatedSince: checkpoints.workflowRunUpdatedAt || "",
+        createdSince: checkpoints.workflowRunCreatedAt || "",
       }),
       requestPage(`/repos/${slug}/branches?per_page=100`),
     ]);
 
+    const incrementalRuns = runs.workflow_runs || [];
+    const incrementalIds = new Set(incrementalRuns.map((run) => String(run.id)));
+    const retainedCandidates = (previousSummary.failedWorkflowRuns || [])
+      .filter((run) => !incrementalIds.has(String(run.id)));
+    const revalidatedRuns = await revalidateFailedWorkflowRuns(slug, retainedCandidates, requestPage);
     const incomingMergedPulls = summarizeMergedPulls(closedPulls, { historyCutoff });
-    const incomingFailedRuns = summarizeFailedRuns(runs);
-    const changedWorkflowRunIds = new Set((runs.workflow_runs || []).map((run) => String(run.id)));
-    const retainedFailedRuns = (previousSummary.failedWorkflowRuns || [])
-      .filter((run) => !changedWorkflowRunIds.has(String(run.id)));
+    const incomingFailedRuns = summarizeFailedRuns({
+      workflow_runs: [...incrementalRuns, ...revalidatedRuns],
+    });
     const cutoffTime = timestamp(historyCutoff);
     const closedPullCheckpoint = Math.max(
       timestamp(checkpoints.closedPullUpdatedAt),
       newestTimestamp(closedPulls, ["updated_at", "merged_at"]),
     );
-    const workflowRunCheckpoint = Math.max(
+    const workflowRunCreatedCheckpoint = Math.max(
+      timestamp(checkpoints.workflowRunCreatedAt),
+      newestTimestamp(incrementalRuns, ["created_at"]),
+    );
+    const workflowRunUpdatedCheckpoint = Math.max(
       timestamp(checkpoints.workflowRunUpdatedAt),
-      newestTimestamp(runs.workflow_runs, ["updated_at", "run_started_at"]),
+      newestTimestamp(incrementalRuns, ["updated_at", "run_started_at"]),
+      newestTimestamp(revalidatedRuns, ["updated_at", "run_started_at"]),
     );
     const mergedFailedRuns = mergeByKey(
-      retainedFailedRuns,
+      [],
       incomingFailedRuns,
       "id",
       "updatedAt",
@@ -646,7 +682,8 @@ async function refreshGithubRepository(repo, previous, {
       failedWorkflowRuns: mergedFailedRuns,
       checkpoints: {
         closedPullUpdatedAt: isoOrEmpty(closedPullCheckpoint),
-        workflowRunUpdatedAt: isoOrEmpty(workflowRunCheckpoint),
+        workflowRunCreatedAt: isoOrEmpty(workflowRunCreatedCheckpoint),
+        workflowRunUpdatedAt: isoOrEmpty(workflowRunUpdatedCheckpoint),
       },
       lastAttemptAt: attemptedAt,
       lastSuccessAt: attemptedAt,

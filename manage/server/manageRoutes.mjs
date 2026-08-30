@@ -14,7 +14,8 @@ import {
 import { authorizeManageRequest, managePermissions, requireBrowserWriteProtection, roleHasPermission } from "./authorization.mjs";
 import { findGithubMatchesForItem, hasGithubMatches } from "./githubLinks.mjs";
 import { createGithubIssueForWorkItem } from "./githubIssues.mjs";
-import { fetchPullRequestDeliveryEvidence, parseGithubPullRequestUrl, readGithubCache, syncGithubCache } from "./githubSync.mjs";
+import { resolveCompletionGithubEvidence } from "./completionWrite.mjs";
+import { fetchPullRequestDeliveryEvidence, readGithubCache, syncGithubCache } from "./githubSync.mjs";
 import { completeGithubLogin, getGithubLoginStart } from "./githubOAuth.mjs";
 import { createStateSnapshot, getStorageStatus, listStateSnapshots, restoreStateSnapshot } from "./storage.mjs";
 import {
@@ -111,6 +112,18 @@ function withPrompt(workItem, baseUrl) {
   };
 }
 
+function withMutationMetadata(req, body = {}) {
+  const headerValue = req.headers["idempotency-key"];
+  const idempotencyKey = String(
+    body.idempotencyKey || (Array.isArray(headerValue) ? headerValue[0] : headerValue) || "",
+  ).trim();
+
+  return {
+    ...body,
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+  };
+}
+
 function agentTokenHint() {
   return getAccessToken() === "manage-local-agent" ? "manage-local-agent" : "$MANAGE_AUTH_TOKEN";
 }
@@ -153,38 +166,6 @@ function completionOverrideRequested(payload = {}) {
   return Boolean(String(payload.completionOverrideReason || "").trim());
 }
 
-function normalizedGithubUrl(value) {
-  return String(value || "").trim().replace(/\/$/, "");
-}
-
-function completionPullRequest(workItem, payload, matches) {
-  const requestedUrl = normalizedGithubUrl(
-    payload.githubPrUrl || workItem.lastAgentUpdate?.githubPrUrl || workItem.githubPrUrl,
-  );
-
-  if (!requestedUrl) {
-    return null;
-  }
-
-  return (matches.pullRequests || []).find(
-    (pullRequest) => normalizedGithubUrl(pullRequest?.url) === requestedUrl && pullRequest?.mergedAt,
-  ) || null;
-}
-
-function verifiedCompletionWriteback(evidence) {
-  const testsRun = Array.isArray(evidence?.tests?.results) ? evidence.tests.results : [];
-  const filesChanged = Array.isArray(evidence?.files?.results) ? evidence.files.results : [];
-
-  return {
-    testsRun,
-    filesChanged,
-    evidenceCollection: {
-      tests: { success: evidence?.tests?.success === true, results: testsRun },
-      files: { success: evidence?.files?.success === true, results: filesChanged },
-    },
-  };
-}
-
 async function prepareCompletionWrite(req, key, payload = {}) {
   const session = getSession(req);
 
@@ -194,7 +175,7 @@ async function prepareCompletionWrite(req, key, payload = {}) {
 
   const override = completionOverrideRequested(payload);
   const principal = authorizeWorkItemCompletion(session, { override });
-  let workItem = await findWorkItem(key);
+  const workItem = await findWorkItem(key);
 
   if (!workItem || workItem.status === "done" || override) {
     return { principal, verifiedCompletionWriteback: null };
@@ -205,75 +186,16 @@ async function prepareCompletionWrite(req, key, payload = {}) {
   const githubCache = localGithubCache
     ? cachedGithub
     : await syncGithubCache();
-  const matches = findGithubMatchesForItem(workItem, githubCache);
+  const resolved = await resolveCompletionGithubEvidence(workItem, payload, {
+    githubCache,
+    localGithubCache,
+    fetchEvidence: fetchPullRequestDeliveryEvidence,
+  });
 
-  if (hasGithubMatches(matches)) {
-    const linked = await applyGithubMatches(workItem.key, matches);
-    workItem = linked.workItem;
-  }
-
-  let pullRequest = completionPullRequest(workItem, payload, matches);
-
-  if (!pullRequest && !localGithubCache) {
-    const parsed = parseGithubPullRequestUrl(
-      payload.githubPrUrl || workItem.lastAgentUpdate?.githubPrUrl || workItem.githubPrUrl,
-    );
-
-    if (parsed) {
-      try {
-        const evidence = await fetchPullRequestDeliveryEvidence(parsed.slug, parsed.number);
-        const fetched = evidence.pullRequest;
-        if (fetched?.mergedAt) {
-          await applyGithubMatches(workItem.key, {
-            source: githubCache?.source || "github-cache",
-            repoSlug: parsed.slug,
-            bestPrUrl: fetched.url,
-            bestBranch: workItem.githubBranch || "",
-            pullRequests: [{
-              url: fetched.url,
-              number: fetched.number,
-              mergedAt: fetched.mergedAt,
-              mergeCommitSha: fetched.mergeCommitSha,
-            }],
-            branches: [],
-            issues: [],
-            workflowRuns: [],
-          });
-          return {
-            principal,
-            verifiedCompletionWriteback: verifiedCompletionWriteback(evidence),
-          };
-        }
-      } catch {
-        // Fall through to the packet-level evidence check. A missing or
-        // unreachable pull request is treated as incomplete delivery evidence.
-      }
-    }
-  }
-
-  if (!pullRequest) {
-    return { principal, verifiedCompletionWriteback: null };
-  }
-
-  try {
-    const evidence = localGithubCache
-      ? pullRequest.deliveryEvidence
-      : await fetchPullRequestDeliveryEvidence(matches.repoSlug, pullRequest.number);
-
-    if (
-      !evidence
-      || normalizedGithubUrl(evidence.pullRequest?.url || pullRequest.url) !== normalizedGithubUrl(pullRequest.url)
-    ) {
-      throw new Error("GitHub returned evidence for a different pull request");
-    }
-
-    return {
-      principal,
-      verifiedCompletionWriteback: verifiedCompletionWriteback(evidence),
-    };
-  } catch (error) {
-    throw Object.assign(new Error(`Unable to verify delivery evidence: ${error.message}`), { statusCode: 409 });
-  }
+  return {
+    principal,
+    ...resolved,
+  };
 }
 
 async function currentBackupState() {
@@ -500,8 +422,12 @@ async function handleRoute(req, res, baseUrl) {
         continue;
       }
 
-      const result = await applyGithubMatches(workItem.key, matches);
-      workItems = result.workItems;
+      const result = await applyGithubMatches(workItem.key, {
+        ...matches,
+        expectedRevision: workItem.revision,
+        idempotencyKey: `github-link-all:${workItem.key}:${githubCache.refreshedAt || githubCache.source || "cache"}`,
+      });
+      workItems = workItems.map((item) => (item.key === workItem.key ? result.workItem : item));
       linked.push({
         key: workItem.key,
         branch: matches.bestBranch,
@@ -540,7 +466,7 @@ async function handleRoute(req, res, baseUrl) {
     }
 
     if (method === "POST") {
-      const result = await createWorkItem(await readJsonBody(req));
+      const result = await createWorkItem(withMutationMetadata(req, await readJsonBody(req)));
       sendJson(res, 201, result);
       return true;
     }
@@ -586,12 +512,16 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const body = await readJsonBody(req);
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const issue = await createGithubIssueForWorkItem(item, repo, {
       baseUrl,
       mock: Boolean(body.mock),
     });
-    const result = await recordGithubIssue(key, issue);
+    const result = await recordGithubIssue(key, {
+      ...issue,
+      expectedRevision: body.expectedRevision ?? item.revision,
+      idempotencyKey: body.idempotencyKey || (issue.url ? `github-issue:${issue.url}` : ""),
+    });
     sendJson(res, 201, {
       issue,
       created: true,
@@ -616,8 +546,13 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const matches = findGithubMatchesForItem(item, await readGithubCache());
-    const result = await applyGithubMatches(key, matches);
+    const result = await applyGithubMatches(key, {
+      ...matches,
+      expectedRevision: body.expectedRevision ?? item.revision,
+      idempotencyKey: body.idempotencyKey || `github-link:${key}:${matches.matchedAt || matches.source || "cache"}`,
+    });
     sendJson(res, 200, {
       workItem: result.workItem,
       workItems: result.workItems,
@@ -634,7 +569,7 @@ async function handleRoute(req, res, baseUrl) {
     }
 
     const key = decodeURIComponent(workItemMatch[1]);
-    const body = await readJsonBody(req);
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const completion = await prepareCompletionWrite(req, key, body);
     const result = await patchWorkItem(key, body, completion);
     sendJson(res, 200, result);
@@ -687,7 +622,7 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await createWorkItem(await readJsonBody(req));
+    const result = await createWorkItem(withMutationMetadata(req, await readJsonBody(req)));
     sendJson(res, 201, {
       ...result,
       ...withPrompt(result.workItem, baseUrl),
@@ -701,7 +636,7 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const body = await readJsonBody(req);
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const repo = body.repo || url.searchParams.get("repo");
     const label = body.label || url.searchParams.get("label");
     const item = findNextWorkItem(await listWorkItems(), { repo, label });
@@ -715,7 +650,10 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await claimWorkItem(item.key, body, { allowForce: canForceClaim(authorization?.session) });
+    const result = await claimWorkItem(item.key, {
+      ...body,
+      expectedRevision: body.expectedRevision ?? item.revision,
+    }, { allowForce: canForceClaim(authorization?.session) });
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
     return true;
   }
@@ -770,7 +708,7 @@ async function handleRoute(req, res, baseUrl) {
     }
 
     const key = decodeURIComponent(statusMatch[1]);
-    const body = await readJsonBody(req);
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const completion = await prepareCompletionWrite(req, key, body);
     const result = await updateTaskStatus(key, body, completion);
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
@@ -784,7 +722,7 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await claimWorkItem(decodeURIComponent(claimMatch[1]), await readJsonBody(req), {
+    const result = await claimWorkItem(decodeURIComponent(claimMatch[1]), withMutationMetadata(req, await readJsonBody(req)), {
       allowForce: canForceClaim(authorization?.session),
     });
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
@@ -799,7 +737,7 @@ async function handleRoute(req, res, baseUrl) {
     }
 
     const key = decodeURIComponent(recoveryMatch[1]);
-    const body = await readJsonBody(req);
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const session = authorization?.session || getSession(req);
     const actor = session?.user?.login || session?.user?.name || body.agent || "Operator";
     const result = await recoverAgentRun(key, body, { actor });
@@ -852,6 +790,8 @@ export async function routeManageRequest(req, res, baseUrl) {
       error: error.message || "Manage API request failed",
       ...(error.code ? { code: error.code } : {}),
       ...(error.details ? { details: error.details } : {}),
+      ...(Number.isFinite(error.expectedRevision) ? { expectedRevision: error.expectedRevision } : {}),
+      ...(Number.isFinite(error.actualRevision) ? { actualRevision: error.actualRevision } : {}),
     });
     return true;
   }

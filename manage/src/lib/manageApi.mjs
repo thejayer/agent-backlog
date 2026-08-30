@@ -108,10 +108,10 @@ export function recoverAgentRun(key, payload = {}) {
   });
 }
 
-export function linkGithubWorkItem(key) {
+export function linkGithubWorkItem(key, payload = {}) {
   return requestJson(`/api/work-items/${encodeURIComponent(key)}/link-github`, {
     method: "POST",
-    body: "{}",
+    body: JSON.stringify(payload),
   });
 }
 

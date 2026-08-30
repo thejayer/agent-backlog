@@ -134,6 +134,7 @@ try {
 
   const created = await agentAuthed("/api/agent/tasks", {
     method: "POST",
+    headers: { "Idempotency-Key": "smoke-create-1" },
     body: JSON.stringify({
       title: "Agent-created lifecycle packet",
       summary: "Create via the agent route after the token split.",
@@ -142,6 +143,26 @@ try {
   });
   const createdBody = await created.json();
   check("agent can create via agent route", created.status === 201 && createdBody.workItem?.key === "TASK-107");
+  check("created packet has revision 1", createdBody.workItem?.revision === 1);
+
+  const createReplay = await agentAuthed("/api/agent/tasks", {
+    method: "POST",
+    headers: { "Idempotency-Key": "smoke-create-1" },
+    body: JSON.stringify({
+      title: "Agent-created lifecycle packet",
+      summary: "Create via the agent route after the token split.",
+      repo: "web-app",
+    }),
+  });
+  const createReplayBody = await createReplay.json();
+  check("idempotent create retry does not allocate another key", createReplay.status === 201 && createReplayBody.workItem?.key === "TASK-107" && createReplayBody.idempotentReplay === true);
+
+  const stalePatch = await operatorAuthed("/api/work-items/TASK-107", {
+    method: "PATCH",
+    body: JSON.stringify({ title: "Stale write", expectedRevision: 0 }),
+  });
+  const stalePatchBody = await stalePatch.json();
+  check("stale revision returns 409", stalePatch.status === 409 && stalePatchBody.code === "WORK_ITEM_REVISION_CONFLICT");
 
   const csrfDenied = await fetch(`${base}/api/backups`, {
     method: "POST",

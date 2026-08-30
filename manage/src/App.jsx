@@ -1104,7 +1104,10 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     setSyncMessage("Saving store");
 
     try {
-      const payload = await updateWorkItem(key, updates);
+      const payload = await updateWorkItem(key, {
+        ...updates,
+        expectedRevision: targetItem.revision,
+      });
       setItems(payload.workItems);
       setSyncState("synced");
       setSyncMessage("Store synced");
@@ -1134,6 +1137,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
       const payload = await claimWorkItemRequest(item.key, {
         agent: item.agent || "Codex",
         leaseMinutes: 90,
+        expectedRevision: item.revision,
       });
       replaceWorkItem(payload.workItem);
       setClaimState("idle");
@@ -1163,6 +1167,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
         action,
         agent: item.claimedBy || item.agent || "Codex",
         agentRunId: item.agentRunId || "",
+        expectedRevision: item.revision,
       });
       if (payload.workItems) {
         setItems(payload.workItems);
@@ -1185,7 +1190,9 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     try {
       const syncPayload = await syncGithub();
       setGithubCache(syncPayload.github);
-      const payload = await linkGithubWorkItem(key);
+      const payload = await linkGithubWorkItem(key, {
+        expectedRevision: items.find((item) => item.key === key)?.revision,
+      });
       setItems(payload.workItems);
       setLinkState("idle");
       setGithubState("idle");
@@ -1209,7 +1216,9 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     setGithubMessage(`Linking GitHub activity for ${selectedItem.key}`);
 
     try {
-      const payload = await linkGithubWorkItem(selectedItem.key);
+      const payload = await linkGithubWorkItem(selectedItem.key, {
+        expectedRevision: selectedItem.revision,
+      });
       setItems(payload.workItems);
       setSelectedKey(payload.workItem.key);
       setLinkState("idle");
@@ -1232,7 +1241,9 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     setGithubMessage(`Creating GitHub issue for ${selectedItem.key}`);
 
     try {
-      const payload = await createGithubIssueRequest(selectedItem.key);
+      const payload = await createGithubIssueRequest(selectedItem.key, {
+        expectedRevision: selectedItem.revision,
+      });
       setItems(payload.workItems);
       setSelectedKey(payload.workItem.key);
       setIssueState("idle");

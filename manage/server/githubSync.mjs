@@ -43,6 +43,137 @@ async function githubApi(endpoint) {
   return process.env.GITHUB_TOKEN ? githubApiWithToken(endpoint) : githubApiWithCli(endpoint);
 }
 
+export function parseGithubPullRequestUrl(value) {
+  const match = String(value || "").trim().match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/i);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    slug: `${match[1]}/${match[2]}`,
+    number: Number(match[3]),
+    url: `https://github.com/${match[1]}/${match[2]}/pull/${match[3]}`,
+  };
+}
+
+export async function githubApiPaginated(endpoint, requestPage = githubApi) {
+  const items = [];
+  const separator = endpoint.includes("?") ? "&" : "?";
+
+  for (let page = 1; ; page += 1) {
+    const payload = await requestPage(`${endpoint}${separator}per_page=100&page=${page}`);
+
+    if (!Array.isArray(payload)) {
+      throw new Error("Paginated GitHub API request must return an array");
+    }
+
+    items.push(...payload);
+
+    if (payload.length < 100) {
+      return items;
+    }
+  }
+}
+
+export async function githubApiObjectPaginated(endpoint, field, requestPage = githubApi) {
+  const items = [];
+  const separator = endpoint.includes("?") ? "&" : "?";
+
+  for (let page = 1; ; page += 1) {
+    const payload = await requestPage(`${endpoint}${separator}per_page=100&page=${page}`);
+    const pageItems = payload?.[field];
+
+    if (!Array.isArray(pageItems)) {
+      throw new Error(`Paginated GitHub API response must include an array at ${field}`);
+    }
+
+    items.push(...pageItems);
+
+    if (
+      pageItems.length < 100
+      || (Number.isFinite(Number(payload.total_count)) && items.length >= Number(payload.total_count))
+    ) {
+      return items;
+    }
+  }
+}
+
+const successfulCheckConclusions = new Set(["success", "neutral", "skipped"]);
+
+function checkRunResult(run) {
+  return `${run?.name || `Check ${run?.id || "unknown"}`}: ${run?.conclusion || run?.status || "unknown"}`;
+}
+
+function commitStatusResult(status) {
+  return `${status?.context || "Commit status"}: ${status?.state || "unknown"}`;
+}
+
+function latestCommitStatuses(statuses) {
+  const contexts = new Set();
+
+  return statuses.filter((status) => {
+    const context = String(status?.context || status?.id || "");
+
+    if (contexts.has(context)) {
+      return false;
+    }
+
+    contexts.add(context);
+    return true;
+  });
+}
+
+export async function fetchPullRequestDeliveryEvidence(slug, pullRequestNumber, request = githubApi) {
+  const normalizedSlug = String(slug || "").trim();
+  const normalizedNumber = Number(pullRequestNumber);
+
+  if (!/^[^/]+\/[^/]+$/.test(normalizedSlug) || !Number.isInteger(normalizedNumber) || normalizedNumber <= 0) {
+    throw new Error("A valid repository and pull request number are required for delivery evidence");
+  }
+
+  const pullRequest = await request(`/repos/${normalizedSlug}/pulls/${normalizedNumber}`);
+  const mergedAt = String(pullRequest?.merged_at || "").trim();
+  const headSha = String(pullRequest?.head?.sha || "").trim();
+
+  if (!mergedAt || !headSha) {
+    throw new Error(`Pull request #${normalizedNumber} is not merged or has no verifiable head commit`);
+  }
+
+  const [files, checkRuns, allCommitStatuses] = await Promise.all([
+    githubApiPaginated(`/repos/${normalizedSlug}/pulls/${normalizedNumber}/files`, request),
+    githubApiObjectPaginated(`/repos/${normalizedSlug}/commits/${headSha}/check-runs?filter=latest`, "check_runs", request),
+    githubApiPaginated(`/repos/${normalizedSlug}/commits/${headSha}/statuses`, request),
+  ]);
+  const commitStatuses = latestCommitStatuses(allCommitStatuses);
+  const testResults = [
+    ...checkRuns.map(checkRunResult),
+    ...commitStatuses.map(commitStatusResult),
+  ];
+  const checksPassed = checkRuns.every(
+    (run) => run?.status === "completed" && successfulCheckConclusions.has(String(run?.conclusion || "")),
+  );
+  const statusesPassed = commitStatuses.every((status) => status?.state === "success");
+  const fileResults = files.map((file) => String(file?.filename || "").trim()).filter(Boolean);
+
+  return {
+    pullRequest: {
+      number: normalizedNumber,
+      url: String(pullRequest?.html_url || "").trim(),
+      mergedAt,
+      mergeCommitSha: String(pullRequest?.merge_commit_sha || "").trim(),
+      headSha,
+    },
+    tests: {
+      success: testResults.length > 0 && checksPassed && statusesPassed,
+      results: testResults,
+    },
+    files: {
+      success: fileResults.length > 0,
+      results: fileResults,
+    },
+  };
+}
+
 function summarizePulls(pulls) {
   return pulls.slice(0, 8).map((pr) => ({
     number: pr.number,
@@ -147,6 +278,24 @@ export function createMockGithubCache() {
                 },
               ]
             : [],
+        mergedPulls: linkedWork
+          ? [
+              {
+                number: Number(linkedWork.key.replace("TASK-", "")),
+                title: `${linkedWork.key}: ${linkedWork.title}`,
+                url: `https://github.com/${repoSlug(repo)}/pull/${Number(linkedWork.key.replace("TASK-", ""))}`,
+                branch: linkedWork.branch,
+                author: "codex",
+                mergedBy: "operator",
+                mergedAt: syncedAt,
+                mergeCommitSha: `mock-merge-${linkedWork.key.toLowerCase()}`,
+                deliveryEvidence: {
+                  tests: { success: true, results: ["Mock CI: success"] },
+                  files: { success: true, results: [`${repo.id}/mock-delivery-file.js`] },
+                },
+              },
+            ]
+          : [],
         latestIssues: [
           {
             number: 201,
@@ -184,6 +333,7 @@ export async function readGithubCache() {
   return readJsonState("github-cache", () => {
     const cache = createMockGithubCache();
     cache.source = "seed";
+    cache.repos = cache.repos.map((repo) => ({ ...repo, mergedPulls: [] }));
     return cache;
   });
 }

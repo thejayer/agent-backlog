@@ -231,6 +231,37 @@ try {
   const statusBody = await status.json();
   check("status writeback records needs_review", statusBody.workItem?.status === "needs_review");
 
+  const blockedDone = await agentAuthed("/api/agent/tasks/TASK-101/status", {
+    method: "POST",
+    body: JSON.stringify({ status: "done", note: "Trying to close without delivery evidence." }),
+  });
+  const blockedDoneBody = await blockedDone.json();
+  check("agent done without evidence is rejected (409)", blockedDone.status === 409 && /Completion evidence required/.test(blockedDoneBody.error || ""));
+
+  const agentOverride = await agentAuthed("/api/agent/tasks/TASK-101/status", {
+    method: "POST",
+    body: JSON.stringify({
+      status: "done",
+      completionOverrideReason: "Agents must not override the delivery evidence gate.",
+    }),
+  });
+  check("agent override is rejected (403)", agentOverride.status === 403);
+
+  const operatorOverride = await operatorAuthed("/api/work-items/TASK-101", {
+    method: "PATCH",
+    body: JSON.stringify({
+      status: "done",
+      completionOverrideReason: "Planning packet completed without a code delivery.",
+    }),
+  });
+  const operatorOverrideBody = await operatorOverride.json();
+  check(
+    "operator override marks the packet done",
+    operatorOverride.status === 200
+      && operatorOverrideBody.workItem?.status === "done"
+      && operatorOverrideBody.workItem?.completionOverride?.reason === "Planning packet completed without a code delivery.",
+  );
+
   const md = await (await agentAuthed("/agent/TASK-101.md")).text();
   check("markdown packet renders", md.includes("# TASK-101") && md.includes("## Acceptance Criteria"));
 

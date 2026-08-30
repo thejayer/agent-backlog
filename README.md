@@ -111,6 +111,9 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
 - **Merged-PR reconciliation** — compare cached merged PRs with backlog and
   shipped packets, match by `TASK-*` key in the title or branch when possible,
   and open a follow-up draft when a merge has no matching packet.
+- **Today attention inbox** — ranks packets that need a human now: incomplete
+  review handoffs, aging reviews, stuck or stale agent runs, and unlinked
+  merged PRs. Each item deep-links to Review, Agents, or Repos.
 
 ## API
 

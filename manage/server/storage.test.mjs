@@ -316,7 +316,11 @@ const backendScenarios = [
         (left, right) => left.order - right.order,
       );
       expect(stored.map((doc) => doc.payload)).toEqual(expected);
-      expect(firestoreMock.collectionStore(FIRESTORE_COLLECTION).get("work-items")).toBeUndefined();
+      expect(firestoreMock.collectionStore(FIRESTORE_COLLECTION).get("work-items")).toMatchObject({
+        migrated: true,
+        initialized: true,
+      });
+      expect(firestoreMock.collectionStore(FIRESTORE_COLLECTION).get("work-items").payload).toBeUndefined();
     },
   },
 ];
@@ -493,6 +497,42 @@ describe("Firestore work item storage", () => {
       (left, right) => left.order - right.order,
     );
     expect(stored.map((doc) => doc.payload)).toEqual(legacyItems);
+    expect(firestoreMock.collectionStore(FIRESTORE_COLLECTION).get("work-items")).toMatchObject({
+      migrated: true,
+      initialized: true,
+    });
+    expect(firestoreMock.collectionStore(FIRESTORE_COLLECTION).get("work-items").payload).toBeUndefined();
+  });
+
+  it("does not remigrate a leftover legacy blob after the per-packet collection is emptied", async () => {
+    firestoreMock.collectionStore(FIRESTORE_COLLECTION).set("work-items", {
+      key: "work-items",
+      payload: [{ id: "w-task-145", key: "TASK-145", title: "Stale leftover" }],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    await expect(readJsonState("work-items", () => [])).resolves.toEqual([
+      { id: "w-task-145", key: "TASK-145", title: "Stale leftover" },
+    ]);
+
+    await writeJsonState("work-items", []);
+
+    await expect(readJsonState("work-items", () => [{ id: "seed-should-not-appear" }])).resolves.toEqual([]);
+    expect(firestoreMock.collectionStore(FIRESTORE_WORK_ITEMS_COLLECTION).size).toBe(0);
+    expect(firestoreMock.collectionStore(FIRESTORE_COLLECTION).get("work-items")).toMatchObject({
+      migrated: true,
+      initialized: true,
+    });
+    expect(firestoreMock.collectionStore(FIRESTORE_COLLECTION).get("work-items").payload).toBeUndefined();
+
+    const created = await createWorkItemState(
+      (key) => ({ id: `w-${key.toLowerCase()}`, key, title: "After empty restore" }),
+      { fallbackFactory: () => [{ id: "seed-should-not-appear" }], idempotencyKey: "after-empty-restore" },
+    );
+    expect(created.workItem.key).toBe("TASK-101");
+    await expect(readJsonState("work-items", () => [])).resolves.toEqual([
+      { id: "w-task-101", key: "TASK-101", title: "After empty restore" },
+    ]);
   });
 
   it("returns the persisted revision during lazy migration", async () => {

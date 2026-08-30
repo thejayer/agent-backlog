@@ -14,7 +14,8 @@ import {
 import { authorizeManageRequest, managePermissions, requireBrowserWriteProtection, roleHasPermission } from "./authorization.mjs";
 import { findGithubMatchesForItem, hasGithubMatches } from "./githubLinks.mjs";
 import { createGithubIssueForWorkItem } from "./githubIssues.mjs";
-import { fetchPullRequestDeliveryEvidence, parseGithubPullRequestUrl, readGithubCache, syncGithubCache } from "./githubSync.mjs";
+import { resolveCompletionGithubEvidence } from "./completionWrite.mjs";
+import { fetchPullRequestDeliveryEvidence, readGithubCache, syncGithubCache } from "./githubSync.mjs";
 import { completeGithubLogin, getGithubLoginStart } from "./githubOAuth.mjs";
 import { createStateSnapshot, getStorageStatus, listStateSnapshots, restoreStateSnapshot } from "./storage.mjs";
 import {
@@ -165,38 +166,6 @@ function completionOverrideRequested(payload = {}) {
   return Boolean(String(payload.completionOverrideReason || "").trim());
 }
 
-function normalizedGithubUrl(value) {
-  return String(value || "").trim().replace(/\/$/, "");
-}
-
-function completionPullRequest(workItem, payload, matches) {
-  const requestedUrl = normalizedGithubUrl(
-    payload.githubPrUrl || workItem.lastAgentUpdate?.githubPrUrl || workItem.githubPrUrl,
-  );
-
-  if (!requestedUrl) {
-    return null;
-  }
-
-  return (matches.pullRequests || []).find(
-    (pullRequest) => normalizedGithubUrl(pullRequest?.url) === requestedUrl && pullRequest?.mergedAt,
-  ) || null;
-}
-
-function verifiedCompletionWriteback(evidence) {
-  const testsRun = Array.isArray(evidence?.tests?.results) ? evidence.tests.results : [];
-  const filesChanged = Array.isArray(evidence?.files?.results) ? evidence.files.results : [];
-
-  return {
-    testsRun,
-    filesChanged,
-    evidenceCollection: {
-      tests: { success: evidence?.tests?.success === true, results: testsRun },
-      files: { success: evidence?.files?.success === true, results: filesChanged },
-    },
-  };
-}
-
 async function prepareCompletionWrite(req, key, payload = {}) {
   const session = getSession(req);
 
@@ -206,7 +175,7 @@ async function prepareCompletionWrite(req, key, payload = {}) {
 
   const override = completionOverrideRequested(payload);
   const principal = authorizeWorkItemCompletion(session, { override });
-  let workItem = await findWorkItem(key);
+  const workItem = await findWorkItem(key);
 
   if (!workItem || workItem.status === "done" || override) {
     return { principal, verifiedCompletionWriteback: null };
@@ -217,84 +186,16 @@ async function prepareCompletionWrite(req, key, payload = {}) {
   const githubCache = localGithubCache
     ? cachedGithub
     : await syncGithubCache();
-  const matches = findGithubMatchesForItem(workItem, githubCache);
+  const resolved = await resolveCompletionGithubEvidence(workItem, payload, {
+    githubCache,
+    localGithubCache,
+    fetchEvidence: fetchPullRequestDeliveryEvidence,
+  });
 
-  if (hasGithubMatches(matches)) {
-    const linked = await applyGithubMatches(workItem.key, {
-      ...matches,
-      expectedRevision: payload.expectedRevision ?? workItem.revision,
-      idempotencyKey: payload.idempotencyKey
-        || `completion-link:${workItem.key}:${String(payload.githubPrUrl || workItem.githubPrUrl || "").trim()}`,
-    });
-    workItem = linked.workItem;
-  }
-
-  let pullRequest = completionPullRequest(workItem, payload, matches);
-
-  if (!pullRequest && !localGithubCache) {
-    const parsed = parseGithubPullRequestUrl(
-      payload.githubPrUrl || workItem.lastAgentUpdate?.githubPrUrl || workItem.githubPrUrl,
-    );
-
-    if (parsed) {
-      try {
-        const evidence = await fetchPullRequestDeliveryEvidence(parsed.slug, parsed.number);
-        const fetched = evidence.pullRequest;
-        if (fetched?.mergedAt) {
-          const linked = await applyGithubMatches(workItem.key, {
-            source: githubCache?.source || "github-cache",
-            repoSlug: parsed.slug,
-            bestPrUrl: fetched.url,
-            bestBranch: workItem.githubBranch || "",
-            expectedRevision: payload.expectedRevision ?? workItem.revision,
-            idempotencyKey: payload.idempotencyKey || `completion-link:${workItem.key}:${fetched.url}`,
-            pullRequests: [{
-              url: fetched.url,
-              number: fetched.number,
-              mergedAt: fetched.mergedAt,
-              mergeCommitSha: fetched.mergeCommitSha,
-            }],
-            branches: [],
-            issues: [],
-            workflowRuns: [],
-          });
-          return {
-            principal,
-            verifiedCompletionWriteback: verifiedCompletionWriteback(evidence),
-            expectedRevision: linked.workItem.revision,
-          };
-        }
-      } catch {
-        // Fall through to the packet-level evidence check. A missing or
-        // unreachable pull request is treated as incomplete delivery evidence.
-      }
-    }
-  }
-
-  if (!pullRequest) {
-    return { principal, verifiedCompletionWriteback: null };
-  }
-
-  try {
-    const evidence = localGithubCache
-      ? pullRequest.deliveryEvidence
-      : await fetchPullRequestDeliveryEvidence(matches.repoSlug, pullRequest.number);
-
-    if (
-      !evidence
-      || normalizedGithubUrl(evidence.pullRequest?.url || pullRequest.url) !== normalizedGithubUrl(pullRequest.url)
-    ) {
-      throw new Error("GitHub returned evidence for a different pull request");
-    }
-
-    return {
-      principal,
-      verifiedCompletionWriteback: verifiedCompletionWriteback(evidence),
-      expectedRevision: workItem.revision,
-    };
-  } catch (error) {
-    throw Object.assign(new Error(`Unable to verify delivery evidence: ${error.message}`), { statusCode: 409 });
-  }
+  return {
+    principal,
+    ...resolved,
+  };
 }
 
 async function currentBackupState() {

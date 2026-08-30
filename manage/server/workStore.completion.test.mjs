@@ -6,6 +6,7 @@ import {
   applyGithubMatches,
   claimWorkItem,
   createWorkItem,
+  listWorkItems,
   patchWorkItem,
   resetWorkItems,
   updateTaskStatus,
@@ -173,6 +174,72 @@ describe("completion evidence gate", () => {
     await expect(
       patchWorkItem("TASK-104", { status: "done", completionOverrideReason: "too short" }),
     ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("lands mergedAt and done in one write without burning the caller revision", async () => {
+    await applyGithubMatches("TASK-101", {
+      source: "github-cache",
+      bestPrUrl: prUrl,
+      bestBranch: "codex/task-101-closeout",
+      pullRequests: [{ url: prUrl, branch: "codex/task-101-closeout" }],
+      branches: [{ name: "codex/task-101-closeout" }],
+      issues: [],
+      workflowRuns: [],
+    });
+    const before = (await listWorkItems()).find((item) => item.key === "TASK-101");
+
+    const { workItem, revision, idempotentReplay } = await updateTaskStatus("TASK-101", {
+      status: "done",
+      note: "Merged and ready to close.",
+      githubPrUrl: prUrl,
+      expectedRevision: before.revision,
+      idempotencyKey: "mark-done-after-unmerged-link",
+    }, {
+      verifiedCompletionWriteback: {
+        testsRun: ["CI: success"],
+        filesChanged: ["web-app/src/App.jsx"],
+      },
+      completionGithubMatches: {
+        source: "github-cache",
+        bestPrUrl: prUrl,
+        bestBranch: "codex/task-101-closeout",
+        pullRequests: [{
+          url: prUrl,
+          branch: "codex/task-101-closeout",
+          mergedAt: "2026-06-12T11:55:00.000Z",
+          mergeCommitSha: "abc123",
+        }],
+        branches: [],
+        issues: [],
+        workflowRuns: [],
+      },
+    });
+
+    expect(idempotentReplay).toBe(false);
+    expect(workItem.status).toBe("done");
+    expect(revision).toBe(before.revision + 1);
+    expect(workItem.githubLinks.pullRequests[0].mergedAt).toBe("2026-06-12T11:55:00.000Z");
+    expect(workItem.completionEvidence).toMatchObject({ prUrl, mergeCommitSha: "abc123" });
+
+    const replay = await updateTaskStatus("TASK-101", {
+      status: "done",
+      note: "Merged and ready to close.",
+      githubPrUrl: prUrl,
+      expectedRevision: before.revision,
+      idempotencyKey: "mark-done-after-unmerged-link",
+    }, {
+      verifiedCompletionWriteback: {
+        testsRun: ["CI: success"],
+        filesChanged: ["web-app/src/App.jsx"],
+      },
+      completionGithubMatches: {
+        source: "github-cache",
+        bestPrUrl: prUrl,
+        pullRequests: [{ url: prUrl, mergedAt: "2026-06-12T11:55:00.000Z", mergeCommitSha: "abc123" }],
+      },
+    });
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.revision).toBe(revision);
   });
 
   it("uses only server-verified evidence for direct patch completion", async () => {

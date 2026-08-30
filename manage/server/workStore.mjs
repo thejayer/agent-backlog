@@ -8,6 +8,7 @@ import {
   reviewCompletionEvidence,
 } from "../src/lib/reviewEvidence.mjs";
 import { deriveAgentRunHealth, isLeaseActive, normalizeLeaseMinutes } from "./agentRunHealth.mjs";
+import { uniquePullRequests } from "./githubLinks.mjs";
 import { createWorkItemState, nextWorkItemKeyFromItems, readJsonState, writeJsonState, writeWorkItemMutation } from "./storage.mjs";
 
 const allowedStatuses = new Set(statusOptions.map((status) => status.id));
@@ -175,6 +176,41 @@ function countGithubMatches(matches) {
     (matches.issues || []).length +
     (matches.workflowRuns || []).length
   );
+}
+
+function withCompletionGithubMatches(item, matches, now) {
+  if (!matches || countGithubMatches(matches) === 0) {
+    return item;
+  }
+
+  const currentLinks = item.githubLinks || {};
+  const pullRequests = uniquePullRequests([
+    ...(matches.pullRequests || []),
+    ...(currentLinks.pullRequests || []),
+  ]);
+  const githubLinks = {
+    ...currentLinks,
+    ...matches,
+    matchedAt: matches.matchedAt || now,
+    bestBranch: matches.bestBranch || currentLinks.bestBranch || item.githubBranch || "",
+    bestPrUrl: matches.bestPrUrl || currentLinks.bestPrUrl || item.githubPrUrl || "",
+    pullRequests,
+    branches: matches.branches || currentLinks.branches || [],
+    issues: matches.issues || currentLinks.issues || [],
+    workflowRuns: matches.workflowRuns || currentLinks.workflowRuns || [],
+  };
+
+  return {
+    ...item,
+    githubBranch: githubLinks.bestBranch,
+    githubPrUrl: githubLinks.bestPrUrl,
+    githubLinks,
+    lastGithubLinkUpdate: {
+      at: now,
+      source: matches.source || currentLinks.source || "github-cache",
+      matchCount: countGithubMatches(githubLinks),
+    },
+  };
 }
 
 function uniqueLines(values) {
@@ -472,8 +508,8 @@ async function patchWorkItemUnlocked(key, updates, options = {}) {
             : value;
   }
 
-  const currentItem = items[index];
   const now = new Date().toISOString();
+  const currentItem = withCompletionGithubMatches(items[index], options.completionGithubMatches, now);
   const isNewCompletion = cleaned.status === "done" && currentItem.status !== "done";
   const decision = isNewCompletion
     ? completionDecision(currentItem, trustedCompletionWriteback(updates, options.verifiedCompletionWriteback))
@@ -772,8 +808,8 @@ async function updateTaskStatusUnlocked(key, payload = {}, options = {}) {
     throw Object.assign(new Error("Work packet not found"), { statusCode: 404 });
   }
 
-  const currentItem = items[index];
   const now = new Date().toISOString();
+  const currentItem = withCompletionGithubMatches(items[index], options.completionGithubMatches, now);
   const agentName = String(payload.agent || currentItem.claimedBy || currentItem.agent || "Unspecified agent").trim();
   const agentRunId = String(payload.agentRunId || currentItem.agentRunId || "").trim();
   const note = String(payload.note || "").trim();

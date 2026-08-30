@@ -593,6 +593,23 @@ async function commitFirestoreBatches(firestore, operations) {
   }
 }
 
+function isUnmigratedLegacyWorkItems(data) {
+  return Array.isArray(data?.payload) && data.migrated !== true && data.initialized !== true;
+}
+
+function isInitializedWorkItemsCollection(data) {
+  return data?.initialized === true || data?.migrated === true;
+}
+
+async function markWorkItemsCollectionInitialized(firestore, now = new Date().toISOString()) {
+  await firestoreDocumentRef(firestore, "work-items").set({
+    key: "work-items",
+    migrated: true,
+    initialized: true,
+    updatedAt: now,
+  });
+}
+
 async function readFirestoreWorkItems(fallbackFactory, { includePersistence = false } = {}) {
   const firestore = await getFirestoreClient();
   const querySnapshot = await firestoreWorkItemsCollection(firestore).orderBy("order", "asc").get();
@@ -605,13 +622,17 @@ async function readFirestoreWorkItems(fallbackFactory, { includePersistence = fa
   }
 
   const legacySnapshot = await firestoreDocumentRef(firestore, "work-items").get();
-  const legacyPayload = legacySnapshot.exists ? legacySnapshot.data()?.payload : undefined;
+  const legacyData = legacySnapshot.exists ? legacySnapshot.data() : undefined;
 
-  if (legacyPayload !== undefined) {
-    await writeFirestoreWorkItems(legacyPayload, { skipSnapshot: true });
+  if (isUnmigratedLegacyWorkItems(legacyData)) {
+    await writeFirestoreWorkItems(legacyData.payload, { skipSnapshot: true });
     return includePersistence
-      ? legacyPayload.map((item) => withWorkItemPersistence(item, { revision: 1 }))
-      : clone(legacyPayload);
+      ? legacyData.payload.map((item) => withWorkItemPersistence(item, { revision: 1 }))
+      : clone(legacyData.payload);
+  }
+
+  if (isInitializedWorkItemsCollection(legacyData)) {
+    return [];
   }
 
   const fallback = fallbackFrom(fallbackFactory);
@@ -793,10 +814,11 @@ async function writeFirestoreWorkItems(value) {
     && operations.every((operation) => operation.type === "set")
   ) {
     await commitFirestoreBatches(firestore, operations);
-    return { changedDocumentCount: operations.length };
+  } else if (operations.length > 0) {
+    await commitFirestoreTransactions(firestore, operations);
   }
 
-  await commitFirestoreTransactions(firestore, operations);
+  await markWorkItemsCollectionInitialized(firestore, now);
 
   return {
     changedDocumentCount: operations.length,

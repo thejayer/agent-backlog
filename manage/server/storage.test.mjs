@@ -868,6 +868,7 @@ describe("getStorageStatus", () => {
     expect(status.files.workItems).toBe(path.join(path.resolve(dataDir), "work-items.json"));
     expect(status.files.githubCache).toBe(path.join(path.resolve(dataDir), "github-cache.json"));
     expect(status.files.initiatives).toBe(path.join(path.resolve(dataDir), "initiatives.json"));
+    expect(status.files.savedViews).toBe(path.join(path.resolve(dataDir), "saved-views.json"));
     expect(status.backups.retention).toBe(25);
     expect(status.backups.automatic).toBe(false);
   });
@@ -905,7 +906,9 @@ describe("getStorageStatus", () => {
       },
     });
     expect(status.documents.initiatives).toBe("initiatives");
-    expect(status.documents.savedViews).toBeUndefined();
+    expect(status.documents.savedViews).toBe("saved-views");
+    expect(status.documents.legacySavedViews).toBe("saved-views");
+    expect(status.documents.savedViewPrincipals).toBe("saved-views-<sha256-principal>");
   });
 
   it("clamps snapshot retention to [5, 250] and ignores garbage", () => {

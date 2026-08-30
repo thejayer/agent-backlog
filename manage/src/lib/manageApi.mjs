@@ -26,6 +26,32 @@ export function fetchInitiatives() {
   return requestJson("/api/initiatives");
 }
 
+export function fetchSavedViews() {
+  return requestJson("/api/saved-views");
+}
+
+export function createSavedView(payload, { idempotencyKey } = {}) {
+  return requestJson("/api/saved-views", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {},
+  });
+}
+
+export function updateSavedView(id, updates) {
+  return requestJson(`/api/saved-views/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(updates),
+  });
+}
+
+export function deleteSavedView(id, expectedRevision) {
+  return requestJson(`/api/saved-views/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    body: JSON.stringify({ expectedRevision }),
+  });
+}
+
 export function createInitiative(payload, { idempotencyKey } = {}) {
   return requestJson("/api/initiatives", {
     method: "POST",

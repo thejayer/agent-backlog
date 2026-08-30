@@ -9,6 +9,7 @@ export const managePermissions = Object.freeze({
   administerBackups: "backups:admin",
   performDestructiveAction: "workspace:destructive",
   viewSystem: "system:view",
+  manageSavedViews: "preferences:saved-views",
 });
 
 const allPermissions = new Set(Object.values(managePermissions));
@@ -78,6 +79,22 @@ export const manageRoutePolicies = Object.freeze([
     id: "github-issue-import",
     match: exact("/api/github/issues/import"),
     methods: { POST: managePermissions.administerGithub },
+  },
+  {
+    id: "saved-views",
+    match: exact("/api/saved-views"),
+    methods: {
+      GET: managePermissions.manageSavedViews,
+      POST: managePermissions.manageSavedViews,
+    },
+  },
+  {
+    id: "saved-view",
+    match: (pathname) => /^\/api\/saved-views\/[^/]+$/.test(pathname),
+    methods: {
+      PATCH: managePermissions.manageSavedViews,
+      DELETE: managePermissions.manageSavedViews,
+    },
   },
   {
     id: "work-items",

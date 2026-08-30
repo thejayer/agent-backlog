@@ -382,6 +382,66 @@ try {
   const agentInitiatives = await agentAuthed("/api/initiatives");
   check("agent token cannot list initiatives (403)", agentInitiatives.status === 403);
 
+  const emptyViews = await operatorAuthed("/api/saved-views");
+  const emptyViewsBody = await emptyViews.json();
+  check("saved views list starts empty", emptyViews.status === 200 && Array.isArray(emptyViewsBody.savedViews) && emptyViewsBody.savedViews.length === 0);
+
+  const createdView = await operatorAuthed("/api/saved-views", {
+    method: "POST",
+    headers: { "Idempotency-Key": "smoke-saved-view-1" },
+    body: JSON.stringify({
+      name: "Ready web-app bugs",
+      state: { repo: "web-app", status: "ready_for_agent", label: "bug", query: "import" },
+    }),
+  });
+  const createdViewBody = await createdView.json();
+  check("saved view create returns 201", createdView.status === 201);
+  check(
+    "saved view keeps generic demo filters",
+    createdViewBody.savedView?.state?.repo === "web-app"
+      && createdViewBody.savedView?.state?.label === "bug"
+      && createdViewBody.savedView?.revision === 1,
+  );
+  check("saved view payload stays generic", !JSON.stringify(createdViewBody).match(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault/i));
+
+  const rejectedCscRepo = await operatorAuthed("/api/saved-views", {
+    method: "POST",
+    body: JSON.stringify({ name: "CSC leak", state: { repo: "csc-workspace" } }),
+  });
+  check("saved view rejects CSC catalog ids (400)", rejectedCscRepo.status === 400);
+
+  const viewReplay = await operatorAuthed("/api/saved-views", {
+    method: "POST",
+    headers: { "Idempotency-Key": "smoke-saved-view-1" },
+    body: JSON.stringify({ name: "Duplicate view" }),
+  });
+  const viewReplayBody = await viewReplay.json();
+  check("saved view create replays the same idempotency key", viewReplayBody.idempotentReplay === true && viewReplayBody.savedView?.id === createdViewBody.savedView?.id);
+
+  const patchedView = await operatorAuthed(`/api/saved-views/${createdViewBody.savedView.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ name: "Ready web-app", expectedRevision: 1 }),
+  });
+  const patchedViewBody = await patchedView.json();
+  check("saved view rename increments revision", patchedViewBody.savedView?.name === "Ready web-app" && patchedViewBody.savedView?.revision === 2);
+
+  const persistedViews = JSON.parse(fs.readFileSync(path.join(dataDir, "saved-views.json"), "utf8"));
+  check(
+    "file backend persists principal-scoped saved views",
+    persistedViews.principals?.[0]?.key === "token:operator"
+      && persistedViews.principals[0].views.some((view) => view.id === createdViewBody.savedView.id),
+  );
+
+  const deletedView = await operatorAuthed(`/api/saved-views/${createdViewBody.savedView.id}`, {
+    method: "DELETE",
+    body: JSON.stringify({ expectedRevision: 2 }),
+  });
+  const deletedViewBody = await deletedView.json();
+  check("saved view delete returns deleted true", deletedView.status === 200 && deletedViewBody.deleted === true);
+
+  const agentViews = await agentAuthed("/api/saved-views");
+  check("agent token cannot list saved views (403)", agentViews.status === 403);
+
   const systemStatus = await operatorAuthed("/api/system/status");
   const systemStatusBody = await systemStatus.json();
   check("system status surfaces GitHub freshness", systemStatusBody.githubSync?.freshness === "fresh");

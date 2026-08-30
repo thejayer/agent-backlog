@@ -1,18 +1,20 @@
 import fs from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { getGithubCachePath, getInitiativesPath, getManageDataDir, getWorkItemsPath } from "./paths.mjs";
+import { getGithubCachePath, getInitiativesPath, getManageDataDir, getSavedViewsPath, getWorkItemsPath } from "./paths.mjs";
 
 const fileReaders = {
   "github-cache": getGithubCachePath,
   "work-items": getWorkItemsPath,
   initiatives: getInitiativesPath,
+  "saved-views": getSavedViewsPath,
 };
 
 const firestoreDocumentIds = {
   "github-cache": "github-cache",
   "work-items": "work-items",
   initiatives: "initiatives",
+  "saved-views": "saved-views",
 };
 
 const stateKeys = new Set(Object.keys(fileReaders));
@@ -572,6 +574,67 @@ function firestoreDocumentRef(firestore, key) {
   }
 
   return firestore.collection(getFirestoreCollection()).doc(documentId);
+}
+
+function firestoreScopedDocumentRef(firestore, key, scope) {
+  const documentId = firestoreDocumentIds[key];
+
+  if (!documentId || key !== "saved-views") {
+    throw new Error(`Scoped Firestore state is unavailable for state key: ${key}`);
+  }
+
+  const scopeHash = createHash("sha256").update(String(scope)).digest("hex");
+  return firestore.collection(getFirestoreCollection()).doc(`${documentId}-${scopeHash}`);
+}
+
+async function mutateFirestoreScopedJsonState(firestore, key, scope, fallbackFactory, operation) {
+  const legacyRef = firestoreDocumentRef(firestore, key);
+  const scopedRef = firestoreScopedDocumentRef(firestore, key, scope);
+
+  return firestore.runTransaction(async (transaction) => {
+    const legacySnapshot = await transaction.get(legacyRef);
+    const scopedSnapshot = await transaction.get(scopedRef);
+    const legacyPayload = legacySnapshot.exists ? legacySnapshot.data()?.payload : undefined;
+    const scopedData = scopedSnapshot.exists ? scopedSnapshot.data() : undefined;
+
+    if (scopedData?.principalKey !== undefined && scopedData.principalKey !== scope) {
+      throw new Error("Scoped state principal does not match its document");
+    }
+
+    const legacyMatches = Array.isArray(legacyPayload?.principals)
+      ? legacyPayload.principals.filter((entry) => entry?.key === scope)
+      : [];
+    const current = scopedData?.payload !== undefined
+      ? clone(scopedData.payload)
+      : legacyPayload !== undefined
+        ? { ...clone(legacyPayload), principals: clone(legacyMatches) }
+        : fallbackFrom(fallbackFactory);
+    const mutation = await operation(current);
+    const now = new Date().toISOString();
+    const shouldWriteScoped = mutation?.write !== false || (!scopedSnapshot.exists && legacyMatches.length > 0);
+
+    if (shouldWriteScoped) {
+      transaction.set(scopedRef, {
+        key,
+        principalKey: scope,
+        payload: clone(mutation?.write === false ? current : mutation.value),
+        updatedAt: now,
+      });
+    }
+
+    if (legacyMatches.length > 0) {
+      transaction.set(legacyRef, {
+        key,
+        payload: {
+          ...clone(legacyPayload),
+          principals: legacyPayload.principals.filter((entry) => entry?.key !== scope),
+        },
+        updatedAt: now,
+      });
+    }
+
+    return mutation?.result === undefined ? undefined : clone(mutation.result);
+  });
 }
 
 function firestoreSnapshotCollection(firestore) {
@@ -1201,7 +1264,7 @@ export async function writeJsonState(key, value, options = {}) {
   throw new Error(`Unsupported MANAGE_STORAGE_BACKEND: ${backend}`);
 }
 
-export async function mutateJsonState(key, fallbackFactory, operation) {
+export async function mutateJsonState(key, fallbackFactory, operation, { scope } = {}) {
   ensureStateKey(key);
 
   if (key === "work-items") {
@@ -1225,6 +1288,11 @@ export async function mutateJsonState(key, fallbackFactory, operation) {
 
   if (backend === "firestore") {
     const firestore = await getFirestoreClient();
+
+    if (scope) {
+      return mutateFirestoreScopedJsonState(firestore, key, String(scope), fallbackFactory, operation);
+    }
+
     const ref = firestoreDocumentRef(firestore, key);
 
     return firestore.runTransaction(async (transaction) => {
@@ -1346,6 +1414,7 @@ export function getStorageStatus() {
         workItems: getWorkItemsPath(),
         githubCache: getGithubCachePath(),
         initiatives: getInitiativesPath(),
+        savedViews: getSavedViewsPath(),
       },
       backups: {
         enabled: true,
@@ -1371,6 +1440,9 @@ export function getStorageStatus() {
         githubCache: firestoreDocumentIds["github-cache"],
         workItemsCounter: workItemCounterDocumentId,
         initiatives: firestoreDocumentIds.initiatives,
+        savedViews: firestoreDocumentIds["saved-views"],
+        legacySavedViews: firestoreDocumentIds["saved-views"],
+        savedViewPrincipals: `${firestoreDocumentIds["saved-views"]}-<sha256-principal>`,
       },
       packetKeyPrefix: getWorkItemKeyPrefix(),
       backups: {

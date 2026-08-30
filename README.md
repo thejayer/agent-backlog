@@ -120,6 +120,10 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
 - **Shipped calendar** — a day calendar of completed packets (`completedAt`)
   and merged PRs from the GitHub cache (`mergedAt`). Packet rows deep-link
   back to the backlog.
+- **URL-backed views** — destination, Backlog filters, search, and packet
+  selection live in the query string, so a link or refresh restores the same
+  console. Operators can also save named filter views (per GitHub principal,
+  or a shared `token:operator` namespace for break-glass sessions).
 
 ## API
 
@@ -133,6 +137,8 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
 | GET | `/api/initiatives` | List initiatives |
 | POST | `/api/initiatives` | Create an initiative (outcomes, packet links, templates) |
 | PATCH | `/api/initiatives/{id}` | Edit an initiative |
+| GET/POST | `/api/saved-views` | List or create principal-scoped Backlog views |
+| PATCH/DELETE | `/api/saved-views/{id}` | Rename, update, or delete a saved view |
 | GET | `/api/agent/next?repo=&label=` | Peek at the next ready packet |
 | GET | `/api/agent/next-key` | Next unused `TASK-*` key |
 | POST | `/api/agent/next/claim` | Claim the next ready packet |

@@ -46,7 +46,7 @@ describe("initiative bootstrap suggestions", () => {
     expect(suggestion).toMatchObject({
       title: "Coordinate a multi-packet delivery outcome",
       packetKeys: ["TASK-411", "TASK-410"],
-      labels: ["backlog", "delivery", "initiative", "persistence", "review"],
+      labels: ["delivery", "initiative", "backlog", "persistence", "review"],
     });
     expect(suggestion.completionCriteria.at(-1)).toContain("TASK-411, TASK-410");
     expect(suggestion.groupingGuidance).toContain("Web app");

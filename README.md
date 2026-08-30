@@ -103,6 +103,9 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
   Agent writebacks that claim `done` without verified evidence are rejected.
 - **Readiness + priority ranking** — `next` hands out the highest-priority,
   most-complete `ready_for_agent` packet first.
+- **Initiatives** — group packets into an outcome with owner, health, completion
+  criteria, and optional generic bootstrap templates. Linked `TASK-*` packets
+  roll up progress and a release timeline (completions, merged PRs, deployments).
 - **GitHub sync (optional)** — incremental, freshness-aware cache of open
   PRs/issues/branches, merged PRs, and failed runs. Syncs skip already-fresh
   pages, stay inside a request budget, and surface stale vs fresh on Repos /
@@ -127,6 +130,9 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
 | GET | `/api/work-items` | List packets |
 | POST | `/api/work-items` | Create a packet |
 | PATCH | `/api/work-items/{key}` | Edit a packet |
+| GET | `/api/initiatives` | List initiatives |
+| POST | `/api/initiatives` | Create an initiative (outcomes, packet links, templates) |
+| PATCH | `/api/initiatives/{id}` | Edit an initiative |
 | GET | `/api/agent/next?repo=&label=` | Peek at the next ready packet |
 | GET | `/api/agent/next-key` | Next unused `TASK-*` key |
 | POST | `/api/agent/next/claim` | Claim the next ready packet |

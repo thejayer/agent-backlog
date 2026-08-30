@@ -585,6 +585,20 @@ export function createMockGithubCache() {
               },
             ]
           : [],
+        deploymentWorkflowRuns: linkedWork
+          ? [
+              {
+                id: 900,
+                name: `Deploy ${repo.id}`,
+                conclusion: "success",
+                status: "completed",
+                branch: "main",
+                headSha: `mock-merge-${linkedWork.key.toLowerCase()}`,
+                url: `https://github.com/${repoSlug(repo)}/actions/runs/900`,
+                updatedAt: syncedAt,
+              },
+            ]
+          : [],
         checkpoints: {
           closedPullUpdatedAt: syncedAt,
           workflowRunCreatedAt: syncedAt,

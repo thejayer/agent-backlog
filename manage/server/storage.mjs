@@ -1,16 +1,18 @@
 import fs from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { getGithubCachePath, getManageDataDir, getWorkItemsPath } from "./paths.mjs";
+import { getGithubCachePath, getInitiativesPath, getManageDataDir, getWorkItemsPath } from "./paths.mjs";
 
 const fileReaders = {
   "github-cache": getGithubCachePath,
   "work-items": getWorkItemsPath,
+  initiatives: getInitiativesPath,
 };
 
 const firestoreDocumentIds = {
   "github-cache": "github-cache",
   "work-items": "work-items",
+  initiatives: "initiatives",
 };
 
 const stateKeys = new Set(Object.keys(fileReaders));
@@ -107,7 +109,7 @@ function getSnapshotsDir() {
 }
 
 function isAutoSnapshotEnabled(key) {
-  return key === "work-items" && process.env.MANAGE_AUTO_SNAPSHOTS !== "false";
+  return ["work-items", "initiatives"].includes(key) && process.env.MANAGE_AUTO_SNAPSHOTS !== "false";
 }
 
 function fallbackFrom(factory) {
@@ -182,6 +184,10 @@ function snapshotStats(values) {
 
   if (Array.isArray(values["github-cache"]?.repos)) {
     stats.githubRepos = values["github-cache"].repos.length;
+  }
+
+  if (Array.isArray(values.initiatives)) {
+    stats.initiatives = values.initiatives.length;
   }
 
   return stats;
@@ -1339,6 +1345,7 @@ export function getStorageStatus() {
       files: {
         workItems: getWorkItemsPath(),
         githubCache: getGithubCachePath(),
+        initiatives: getInitiativesPath(),
       },
       backups: {
         enabled: true,
@@ -1363,6 +1370,7 @@ export function getStorageStatus() {
         legacyWorkItems: firestoreDocumentIds["work-items"],
         githubCache: firestoreDocumentIds["github-cache"],
         workItemsCounter: workItemCounterDocumentId,
+        initiatives: firestoreDocumentIds.initiatives,
       },
       packetKeyPrefix: getWorkItemKeyPrefix(),
       backups: {

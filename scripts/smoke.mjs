@@ -345,6 +345,43 @@ try {
       && !JSON.stringify(followUpBody).match(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault|Shipped reconciliation/i),
   );
 
+  const emptyInitiatives = await operatorAuthed("/api/initiatives");
+  const emptyInitiativesBody = await emptyInitiatives.json();
+  check("initiatives list starts empty", emptyInitiatives.status === 200 && Array.isArray(emptyInitiativesBody.initiatives) && emptyInitiativesBody.initiatives.length === 0);
+
+  const createdInitiative = await operatorAuthed("/api/initiatives", {
+    method: "POST",
+    headers: { "Idempotency-Key": "smoke-initiative-1" },
+    body: JSON.stringify({
+      title: "Coordinate contact import quality",
+      objective: "Close the linked packets as one delivery outcome.",
+      packetKeys: ["TASK-101", "CSC-394", "not-a-packet"],
+      status: "active",
+    }),
+  });
+  const createdInitiativeBody = await createdInitiative.json();
+  check("initiative create returns 201", createdInitiative.status === 201);
+  check("initiative keeps TASK keys and drops CSC keys", JSON.stringify(createdInitiativeBody.initiative?.packetKeys) === JSON.stringify(["TASK-101"]));
+  check("initiative payload stays generic", !JSON.stringify(createdInitiativeBody).match(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault/i));
+
+  const initiativeReplay = await operatorAuthed("/api/initiatives", {
+    method: "POST",
+    headers: { "Idempotency-Key": "smoke-initiative-1" },
+    body: JSON.stringify({ title: "Duplicate initiative" }),
+  });
+  const initiativeReplayBody = await initiativeReplay.json();
+  check("initiative create replays the same idempotency key", initiativeReplayBody.idempotentReplay === true);
+
+  const patchedInitiative = await operatorAuthed(`/api/initiatives/${createdInitiativeBody.initiative.id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ packetKeys: ["TASK-101", "TASK-102"], health: "watch" }),
+  });
+  const patchedInitiativeBody = await patchedInitiative.json();
+  check("initiative patch links TASK packets", JSON.stringify(patchedInitiativeBody.initiative?.packetKeys) === JSON.stringify(["TASK-101", "TASK-102"]) && patchedInitiativeBody.initiative?.health === "watch");
+
+  const agentInitiatives = await agentAuthed("/api/initiatives");
+  check("agent token cannot list initiatives (403)", agentInitiatives.status === 403);
+
   const systemStatus = await operatorAuthed("/api/system/status");
   const systemStatusBody = await systemStatus.json();
   check("system status surfaces GitHub freshness", systemStatusBody.githubSync?.freshness === "fresh");

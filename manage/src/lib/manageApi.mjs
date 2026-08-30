@@ -22,6 +22,25 @@ export function fetchWorkItems() {
   return requestJson("/api/work-items");
 }
 
+export function fetchInitiatives() {
+  return requestJson("/api/initiatives");
+}
+
+export function createInitiative(payload, { idempotencyKey } = {}) {
+  return requestJson("/api/initiatives", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {},
+  });
+}
+
+export function updateInitiative(id, updates) {
+  return requestJson(`/api/initiatives/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(updates),
+  });
+}
+
 export function fetchSession() {
   return requestJson("/api/auth/session");
 }

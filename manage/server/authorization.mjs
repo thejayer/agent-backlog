@@ -88,6 +88,19 @@ export const manageRoutePolicies = Object.freeze([
     },
   },
   {
+    id: "initiatives",
+    match: exact("/api/initiatives"),
+    methods: {
+      GET: managePermissions.viewWorkspace,
+      POST: managePermissions.updateWorkspace,
+    },
+  },
+  {
+    id: "initiative",
+    match: (pathname) => /^\/api\/initiatives\/[^/]+$/.test(pathname),
+    methods: { PATCH: managePermissions.updateWorkspace },
+  },
+  {
     id: "work-item-github-issue",
     match: (pathname) => /^\/api\/work-items\/[^/]+\/github-issue$/.test(pathname),
     methods: { POST: managePermissions.administerGithub },

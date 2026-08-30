@@ -867,7 +867,7 @@ describe("getStorageStatus", () => {
     expect(status.dataDir).toBe(path.resolve(dataDir));
     expect(status.files.workItems).toBe(path.join(path.resolve(dataDir), "work-items.json"));
     expect(status.files.githubCache).toBe(path.join(path.resolve(dataDir), "github-cache.json"));
-    expect(status.files.initiatives).toBeUndefined();
+    expect(status.files.initiatives).toBe(path.join(path.resolve(dataDir), "initiatives.json"));
     expect(status.backups.retention).toBe(25);
     expect(status.backups.automatic).toBe(false);
   });
@@ -904,7 +904,7 @@ describe("getStorageStatus", () => {
         maxDocumentBytes: 850_000,
       },
     });
-    expect(status.documents.initiatives).toBeUndefined();
+    expect(status.documents.initiatives).toBe("initiatives");
     expect(status.documents.savedViews).toBeUndefined();
   });
 

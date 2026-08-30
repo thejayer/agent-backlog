@@ -28,6 +28,7 @@ import {
   createWorkItem as createWorkItemRequest,
   fetchBackups,
   fetchWorkItems,
+  fetchGithubReconciliation,
   fetchGithubSync,
   fetchSession,
   fetchSystemStatus,
@@ -39,6 +40,7 @@ import {
   restoreBackup as restoreBackupRequest,
   recoverAgentRun as recoverAgentRunRequest,
   resetWorkItems as resetWorkItemsRequest,
+  resolveGithubReconciliation,
   syncGithub,
   updateWorkItem,
 } from "./lib/manageApi.mjs";
@@ -65,7 +67,7 @@ const viewCopy = {
   repos: {
     eyebrow: "Operations",
     title: "Repository health",
-    description: "Review GitHub sync state, repo activity, and backlog snapshots across the app family.",
+    description: "Review GitHub sync state, unmatched merged pull requests, and backlog snapshots across the app family.",
   },
   agents: {
     eyebrow: "Operations",
@@ -731,6 +733,15 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
   const [githubCache, setGithubCache] = useState(null);
   const [githubState, setGithubState] = useState("idle");
   const [githubMessage, setGithubMessage] = useState("GitHub cache not synced");
+  const [reconciliation, setReconciliation] = useState({
+    totalMergedPullRequests: 0,
+    linkedMergedPullRequests: 0,
+    unmatchedMergedPullRequests: [],
+  });
+  const [reconciliationSyncState, setReconciliationSyncState] = useState("idle");
+  const [reconciliationActionState, setReconciliationActionState] = useState("idle");
+  const [reconciliationMessage, setReconciliationMessage] = useState("Reconciliation ready");
+  const [reconciliationAction, setReconciliationAction] = useState("");
   const [claimState, setClaimState] = useState("idle");
   const [linkState, setLinkState] = useState("idle");
   const [issueState, setIssueState] = useState("idle");
@@ -779,7 +790,27 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
       }
     }
 
+    async function loadInitialReconciliation() {
+      setReconciliationSyncState("loading");
+
+      try {
+        const reconciliationPayload = await fetchGithubReconciliation();
+
+        if (!canceled && reconciliationPayload?.reconciliation) {
+          setReconciliation(reconciliationPayload.reconciliation);
+          setReconciliationSyncState("idle");
+          setReconciliationMessage("Reconciliation ready");
+        }
+      } catch (error) {
+        if (!canceled) {
+          setReconciliationSyncState("failed");
+          setReconciliationMessage(error.message);
+        }
+      }
+    }
+
     loadInitialData();
+    loadInitialReconciliation();
 
     return () => {
       canceled = true;
@@ -1061,6 +1092,16 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
 
   function replaceWorkItem(workItem) {
     setItems((currentItems) => currentItems.map((item) => (item.key === workItem.key ? workItem : item)));
+    setSelectedKey(workItem.key);
+  }
+
+  function upsertWorkItem(workItem) {
+    setItems((currentItems) => {
+      const exists = currentItems.some((item) => item.key === workItem.key);
+      return exists
+        ? currentItems.map((item) => (item.key === workItem.key ? workItem : item))
+        : [workItem, ...currentItems];
+    });
     setSelectedKey(workItem.key);
   }
 
@@ -1404,12 +1445,18 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
 
   async function runGithubSync({ mock = false } = {}) {
     setGithubState("syncing");
+    setReconciliationSyncState("loading");
+    setReconciliationActionState("idle");
     setGithubMessage(mock ? "Refreshing mock GitHub cache" : "Syncing GitHub with gh");
 
     try {
       const payload = await syncGithub({ mock });
+      const reconciliationPayload = await fetchGithubReconciliation();
       setGithubCache(payload.github);
+      setReconciliation(reconciliationPayload.reconciliation);
       setGithubState("idle");
+      setReconciliationSyncState("idle");
+      setReconciliationMessage("Reconciliation refreshed");
       const freshness = payload.github.syncState === "current" || payload.github.source === "mock"
         ? "fresh"
         : "stale";
@@ -1423,7 +1470,48 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
       await refreshSystemStatus();
     } catch (error) {
       setGithubState("failed");
+      setReconciliationSyncState("failed");
+      setReconciliationMessage(error.message);
       setGithubMessage(error.message);
+    }
+  }
+
+  async function reconcileMergedPull(action, pullRequest, workItemKey = "") {
+    const actionKey = `${action}:${pullRequest.id}`;
+    setReconciliationAction(actionKey);
+    setReconciliationActionState("saving");
+    setReconciliationMessage(action === "link" ? `Linking ${workItemKey}` : "Creating follow-up packet");
+    const currentItem = workItemKey ? items.find((item) => item.key === workItemKey) : null;
+
+    if (workItemKey && !Number.isFinite(currentItem?.revision)) {
+      setReconciliationActionState("failed");
+      setReconciliationMessage(`Refresh ${workItemKey} before linking the pull request.`);
+      setReconciliationAction("");
+      return;
+    }
+
+    try {
+      const payload = await resolveGithubReconciliation({
+        action,
+        pullRequestUrl: pullRequest.url,
+        ...(workItemKey ? { workItemKey, expectedRevision: currentItem.revision } : {}),
+        idempotencyKey: `reconcile:${action}:${pullRequest.id}:${currentItem?.revision ?? "create"}`,
+      });
+      upsertWorkItem(payload.workItem);
+      setReconciliation(payload.reconciliation);
+      setReconciliationActionState("idle");
+      setReconciliationMessage(
+        action === "link"
+          ? `Linked ${payload.workItem.key} to ${pullRequest.repoId} #${pullRequest.number}`
+          : payload.created
+            ? `Created ${payload.workItem.key} for ${pullRequest.repoId} #${pullRequest.number}`
+            : `${pullRequest.repoId} #${pullRequest.number} was already reconciled`,
+      );
+    } catch (error) {
+      setReconciliationActionState("failed");
+      setReconciliationMessage(error.message);
+    } finally {
+      setReconciliationAction("");
     }
   }
 
@@ -1899,10 +1987,18 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
               githubCache={githubCache}
               githubState={githubState}
               githubMessage={githubMessage}
+              reconciliation={reconciliation}
+              reconciliationSyncState={reconciliationSyncState}
+              reconciliationActionState={reconciliationActionState}
+              reconciliationMessage={reconciliationMessage}
+              reconciliationAction={reconciliationAction}
               onSync={() => runGithubSync()}
               onMockSync={() => runGithubSync({ mock: true })}
               onLinkAll={linkAllGithub}
               onImportIssues={importGithubIssuesFromCache}
+              onLinkMerge={(pullRequest, key) => reconcileMergedPull("link", pullRequest, key)}
+              onCreateFollowUp={(pullRequest) => reconcileMergedPull("follow_up", pullRequest)}
+              onOpenPacket={openPacket}
               linkState={linkState}
               issueImportState={issueImportState}
             />
@@ -3273,15 +3369,139 @@ function BackupPanel({ backups, backupState, backupMessage, onRefresh, onCreate,
   );
 }
 
+function MergedPullReconciliation({
+  githubState,
+  reconciliation,
+  reconciliationSyncState,
+  reconciliationActionState,
+  reconciliationMessage,
+  reconciliationAction,
+  onLinkMerge,
+  onCreateFollowUp,
+  onOpenPacket,
+}) {
+  const unmatchedMerges = reconciliation?.unmatchedMergedPullRequests || [];
+  const reconciliationDisplayState = reconciliationActionState !== "idle"
+    ? reconciliationActionState
+    : reconciliationSyncState;
+
+  return (
+    <section className="reconciliation-panel" aria-label="Merged pull request reconciliation">
+      <div className="reconciliation-head">
+        <div>
+          <span className="section-kicker">Delivery reconciliation</span>
+          <h2>Merged PRs without packets</h2>
+          <p>Match cached GitHub merges to an existing packet by TASK key, or open a follow-up draft.</p>
+        </div>
+        <div className="reconciliation-summary">
+          <strong>{unmatchedMerges.length}</strong>
+          <span>{unmatchedMerges.length === 1 ? "unmatched merge" : "unmatched merges"}</span>
+        </div>
+      </div>
+
+      <div
+        className={`reconciliation-status ${reconciliationDisplayState === "failed" ? "is-failed" : ""}`}
+        role={reconciliationDisplayState === "failed" && githubState !== "failed" ? "alert" : "status"}
+      >
+        {reconciliationMessage}
+      </div>
+
+      {unmatchedMerges.length ? (
+        <div className="reconciliation-list">
+          {unmatchedMerges.map((pullRequest) => {
+            const suggestedPacket = pullRequest.suggestedPacket;
+            const linkActionKey = `link:${pullRequest.id}`;
+            const followUpActionKey = `follow_up:${pullRequest.id}`;
+            const anyActionPending = Boolean(reconciliationAction);
+
+            return (
+              <article className="reconciliation-item" key={pullRequest.id}>
+                <div className="reconciliation-pr">
+                  <div className="reconciliation-meta">
+                    <span>{pullRequest.repoId} #{pullRequest.number}</span>
+                    <time dateTime={pullRequest.mergedAt}>Merged {formatDateTime(pullRequest.mergedAt)}</time>
+                  </div>
+                  <a href={pullRequest.url} target="_blank" rel="noreferrer">{pullRequest.title}</a>
+                  <small>{pullRequest.branch || "Branch not recorded"}</small>
+                </div>
+
+                <div className={`reconciliation-suggestion ${suggestedPacket ? `is-${suggestedPacket.confidence}` : "is-none"}`}>
+                  <span>Strongest packet match</span>
+                  {suggestedPacket ? (
+                    <>
+                      <button
+                        type="button"
+                        className="reconciliation-packet-link"
+                        onClick={() => onOpenPacket(suggestedPacket.key)}
+                      >
+                        <strong>{suggestedPacket.key} · {suggestedPacket.title}</strong>
+                      </button>
+                      <small>{suggestedPacket.reason} · {suggestedPacket.confidence} confidence</small>
+                    </>
+                  ) : (
+                    <>
+                      <strong>No credible match</strong>
+                      <small>Create a draft follow-up to record this merge.</small>
+                    </>
+                  )}
+                </div>
+
+                <div className="reconciliation-actions">
+                  {suggestedPacket ? (
+                    <button
+                      type="button"
+                      className="button primary"
+                      aria-label={`Link ${suggestedPacket.key} to ${pullRequest.repoId} PR #${pullRequest.number}`}
+                      disabled={anyActionPending}
+                      onClick={() => onLinkMerge(pullRequest, suggestedPacket.key)}
+                    >
+                      {reconciliationAction === linkActionKey ? "Linking" : `Link ${suggestedPacket.key}`}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="button secondary"
+                    aria-label={`Create follow-up for ${pullRequest.repoId} PR #${pullRequest.number}`}
+                    disabled={anyActionPending}
+                    onClick={() => onCreateFollowUp(pullRequest)}
+                  >
+                    {reconciliationAction === followUpActionKey ? "Creating" : "Create follow-up"}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="reconciliation-empty">
+          <Icon name="review" />
+          <div>
+            <strong>Every cached merge has a packet</strong>
+            <span>Refresh GitHub to check for newly merged pull requests.</span>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function RepoHealth({
   repositories,
   githubCache,
   githubState,
   githubMessage,
+  reconciliation,
+  reconciliationSyncState,
+  reconciliationActionState,
+  reconciliationMessage,
+  reconciliationAction,
   onSync,
   onMockSync,
   onLinkAll,
   onImportIssues,
+  onLinkMerge,
+  onCreateFollowUp,
+  onOpenPacket,
   linkState,
   issueImportState,
 }) {
@@ -3320,6 +3540,17 @@ function RepoHealth({
           ? `${cacheFreshness === "stale" ? "Stale" : cacheFreshness === "fresh" ? "Fresh" : "Unknown"} · Last sync ${formatDateTime(githubCache.syncedAt)}`
           : githubMessage}
       </div>
+      <MergedPullReconciliation
+        githubState={githubState}
+        reconciliation={reconciliation}
+        reconciliationSyncState={reconciliationSyncState}
+        reconciliationActionState={reconciliationActionState}
+        reconciliationMessage={reconciliationMessage}
+        reconciliationAction={reconciliationAction}
+        onLinkMerge={onLinkMerge}
+        onCreateFollowUp={onCreateFollowUp}
+        onOpenPacket={onOpenPacket}
+      />
       <div className="repo-grid">
         {repositories.map((repo) => {
           const syncedRepo = githubByRepo.get(repo.id);

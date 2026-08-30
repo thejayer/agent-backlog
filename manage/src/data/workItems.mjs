@@ -104,6 +104,7 @@ export const labelOptions = [
   { id: "ci", label: "CI" },
   { id: "data-quality", label: "Data quality" },
   { id: "docs", label: "Docs" },
+  { id: "follow-up", label: "Follow-up" },
   { id: "github-sync", label: "GitHub sync" },
   { id: "reporting", label: "Reporting" },
   { id: "smoke-test", label: "Smoke test" },

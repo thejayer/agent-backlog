@@ -8,7 +8,13 @@ import {
   reviewCompletionEvidence,
 } from "../src/lib/reviewEvidence.mjs";
 import { deriveAgentRunHealth, isLeaseActive, normalizeLeaseMinutes } from "./agentRunHealth.mjs";
-import { uniquePullRequests } from "./githubLinks.mjs";
+import {
+  githubLinksFromMergedPullRequest,
+  normalizedGithubUrl,
+  repoMatches,
+  uniquePullRequests,
+  workItemLinksPullRequest,
+} from "./githubLinks.mjs";
 import { createWorkItemState, nextWorkItemKeyFromItems, readJsonState, writeJsonState, writeWorkItemMutation } from "./storage.mjs";
 
 const allowedStatuses = new Set(statusOptions.map((status) => status.id));
@@ -215,6 +221,10 @@ function withCompletionGithubMatches(item, matches, now) {
 
 function uniqueLines(values) {
   return [...new Set(splitLines(values))];
+}
+
+function repoMatchesWorkItem(workItem, repo) {
+  return Boolean(repo) && repoMatches(workItem, repo);
 }
 
 function nextKey(items) {
@@ -439,6 +449,53 @@ async function createWorkItemUnlocked(payload) {
 
 export async function createWorkItem(payload) {
   return serializeWorkItemMutation(() => createWorkItemUnlocked(payload));
+}
+
+export async function createWorkItemForPullRequest(payload) {
+  const mergedPullRequest = payload.mergedPullRequest;
+  const pullRequestUrl = normalizedGithubUrl(payload?.githubPrUrl || mergedPullRequest?.url);
+
+  if (!pullRequestUrl) {
+    throw Object.assign(new Error("A GitHub pull request URL is required"), { statusCode: 400 });
+  }
+
+  return serializeWorkItemMutation(async () => {
+    const items = await readWorkItems();
+    const existingWorkItem = items.find((workItem) => workItemLinksPullRequest(workItem, pullRequestUrl));
+
+    if (existingWorkItem) {
+      return {
+        created: false,
+        ...workItemMutationResult(existingWorkItem, items, { changed: false }),
+      };
+    }
+
+    const now = new Date().toISOString();
+    const source = payload.githubSource || payload.githubLinks?.source || "github-cache";
+    const githubLinks = payload.githubLinks
+      || (mergedPullRequest?.mergedAt
+        ? githubLinksFromMergedPullRequest(payload.linkRepo || { id: payload.repo }, mergedPullRequest, {
+            source,
+            matchedAt: now,
+          })
+        : null);
+
+    const result = await createWorkItemUnlocked({
+      ...payload,
+      githubPrUrl: payload.githubPrUrl || mergedPullRequest?.url || "",
+      githubBranch: payload.githubBranch || mergedPullRequest?.branch || "",
+      githubLinks,
+      lastGithubLinkUpdate: payload.lastGithubLinkUpdate || (githubLinks
+        ? {
+            at: now,
+            source,
+            matchCount: countGithubMatches(githubLinks),
+          }
+        : null),
+      idempotencyKey: payload.idempotencyKey || `pull-request:${pullRequestUrl}`,
+    });
+    return { ...result, created: true };
+  });
 }
 
 async function patchWorkItemUnlocked(key, updates, options = {}) {
@@ -936,6 +993,65 @@ async function applyGithubMatchesUnlocked(key, matches = {}) {
 
 export async function applyGithubMatches(key, matches = {}) {
   return serializeWorkItemMutation(() => applyGithubMatchesUnlocked(key, matches));
+}
+
+async function linkMergedPullRequestUnlocked(key, {
+  repo,
+  pullRequest,
+  source = "github-cache",
+  expectedRevision,
+  idempotencyKey,
+} = {}) {
+  const items = await readWorkItems();
+  const normalizedKey = String(key || "").toUpperCase();
+  const index = items.findIndex((item) => item.key === normalizedKey);
+
+  if (index === -1) {
+    throw Object.assign(new Error("Work packet not found"), { statusCode: 404 });
+  }
+
+  const currentItem = items[index];
+  const pullRequestUrl = String(pullRequest?.url || "").trim();
+
+  if (!repoMatchesWorkItem(currentItem, repo)) {
+    throw Object.assign(new Error("Pull request repository does not match the selected work packet"), { statusCode: 409 });
+  }
+
+  if (!pullRequestUrl || !pullRequest?.mergedAt) {
+    throw Object.assign(new Error("A merged pull request is required for reconciliation"), { statusCode: 400 });
+  }
+
+  const now = new Date().toISOString();
+  const currentLinks = currentItem.githubLinks || {};
+  const githubLinks = githubLinksFromMergedPullRequest(repo, pullRequest, {
+    source,
+    matchedAt: now,
+    currentLinks: {
+      ...currentLinks,
+      repoId: currentLinks.repoId || currentItem.repo,
+    },
+    currentBranch: currentItem.githubBranch,
+  });
+  const nextItem = {
+    ...currentItem,
+    githubBranch: pullRequest.branch || currentItem.githubBranch || "",
+    githubPrUrl: pullRequestUrl,
+    githubLinks,
+    lastGithubLinkUpdate: {
+      at: now,
+      source,
+      matchCount: countGithubMatches(githubLinks),
+    },
+    updatedAt: now,
+  };
+  return commitWorkItemMutation(items, index, nextItem, {
+    expectedRevision,
+    idempotencyKey: idempotencyKey || `${source}:${pullRequestUrl}`,
+  });
+}
+
+export async function linkMergedPullRequest(key, payload = {}) {
+  return serializeWorkItemMutation(() => linkMergedPullRequestUnlocked(key, payload));
 }
 
 async function recordGithubIssueUnlocked(key, issue = {}) {

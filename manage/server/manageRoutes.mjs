@@ -12,7 +12,12 @@ import {
   isPublicRoute,
 } from "./auth.mjs";
 import { authorizeManageRequest, managePermissions, requireBrowserWriteProtection, roleHasPermission } from "./authorization.mjs";
-import { findGithubMatchesForItem, hasGithubMatches } from "./githubLinks.mjs";
+import {
+  findGithubMatchesForItem,
+  findMergedPullRequest,
+  hasGithubMatches,
+  reconcileMergedPullRequests,
+} from "./githubLinks.mjs";
 import { createGithubIssueForWorkItem } from "./githubIssues.mjs";
 import { resolveCompletionGithubEvidence } from "./completionWrite.mjs";
 import { fetchPullRequestDeliveryEvidence, readGithubCache, summarizeGithubSyncStatus, syncGithubCache } from "./githubSync.mjs";
@@ -22,7 +27,9 @@ import {
   applyGithubMatches,
   claimWorkItem,
   createWorkItem,
+  createWorkItemForPullRequest,
   importGithubIssues,
+  linkMergedPullRequest,
   listWorkItems,
   patchWorkItem,
   recordGithubIssue,
@@ -400,6 +407,99 @@ async function handleRoute(req, res, baseUrl) {
     }
 
     methodAllowed(res, ["GET", "POST"]);
+    return true;
+  }
+
+  if (pathname === "/api/github/reconciliation") {
+    const githubCache = await readGithubCache();
+    const workItems = await listWorkItems();
+
+    if (method === "GET") {
+      sendJson(res, 200, { reconciliation: reconcileMergedPullRequests(workItems, githubCache) });
+      return true;
+    }
+
+    if (method !== "POST") {
+      methodAllowed(res, ["GET", "POST"]);
+      return true;
+    }
+
+    const body = withMutationMetadata(req, await readJsonBody(req));
+    const action = String(body.action || "").trim();
+    const mergedPullRequest = findMergedPullRequest(githubCache, body.pullRequestUrl);
+
+    if (!mergedPullRequest) {
+      sendJson(res, 404, { error: "Merged pull request not found in the GitHub sync cache" });
+      return true;
+    }
+
+    if (action === "link") {
+      const key = String(body.workItemKey || "").trim().toUpperCase();
+
+      if (!key) {
+        sendJson(res, 400, { error: "A suggested work packet key is required" });
+        return true;
+      }
+
+      const selected = workItems.find((item) => item.key === key);
+      const result = await linkMergedPullRequest(key, {
+        ...mergedPullRequest,
+        source: githubCache.source || "github-cache",
+        expectedRevision: body.expectedRevision ?? selected?.revision,
+        idempotencyKey: body.idempotencyKey || `reconciliation-link:${mergedPullRequest.pullRequest.url}:${key}`,
+      });
+      const nextWorkItems = workItems.map((item) => (item.key === key ? result.workItem : item));
+      sendJson(res, 200, {
+        action,
+        ...result,
+        reconciliation: reconcileMergedPullRequests(nextWorkItems, githubCache),
+      });
+      return true;
+    }
+
+    if (action === "follow_up") {
+      const repoLabel = mergedPullRequest.repo.id || mergedPullRequest.repo.name || "repository";
+      const pullRequest = mergedPullRequest.pullRequest;
+      const result = await createWorkItemForPullRequest({
+        title: `Follow up ${repoLabel} PR #${pullRequest.number}: ${pullRequest.title}`,
+        status: "draft",
+        priority: "medium",
+        project: "Reconciliation",
+        repo: repoLabel,
+        labels: ["github-sync", "follow-up"],
+        summary: `Reconcile remaining work from merged pull request #${pullRequest.number} in ${mergedPullRequest.repo.slug || repoLabel}.`,
+        desiredOutcome: "The merged pull request is linked to a reviewed work packet, with any remaining validation or cleanup clearly recorded.",
+        acceptanceCriteria: [
+          "Review the merged pull request and record why it did not map to an existing packet.",
+          "Complete any remaining validation or narrow cleanup work.",
+          "Close this follow-up with a recorded disposition.",
+        ],
+        relevantUrls: [pullRequest.url],
+        implementationNotes: [
+          `Source pull request merged at ${pullRequest.mergedAt}.`,
+          `Created from merged-PR reconciliation using GitHub cache source ${githubCache.source || "unknown"}.`,
+        ],
+        deployNotes: "Follow the repository's normal review and deployment path if code changes are required.",
+        githubBranch: pullRequest.branch || "",
+        githubPrUrl: pullRequest.url,
+        mergedPullRequest: pullRequest,
+        linkRepo: mergedPullRequest.repo,
+        githubSource: githubCache.source || "github-cache",
+        idempotencyKey: body.idempotencyKey || `reconciliation-follow-up:${pullRequest.url}`,
+      });
+      const nextWorkItems = result.created
+        ? [result.workItem, ...workItems]
+        : workItems.map((item) => (item.key === result.workItem.key ? result.workItem : item));
+      sendJson(res, result.created ? 201 : 200, {
+        action,
+        created: result.created,
+        ...result,
+        reconciliation: reconcileMergedPullRequests(nextWorkItems, githubCache),
+      });
+      return true;
+    }
+
+    sendJson(res, 400, { error: "Reconciliation action must be link or follow_up" });
     return true;
   }
 

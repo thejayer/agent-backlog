@@ -514,27 +514,50 @@ export function createMockGithubCache() {
                 },
               ]
             : [],
-        mergedPulls: linkedWork
-          ? [
-              {
-                number: Number(linkedWork.key.replace("TASK-", "")),
-                title: `${linkedWork.key}: ${linkedWork.title}`,
-                url: `https://github.com/${repoSlug(repo)}/pull/${Number(linkedWork.key.replace("TASK-", ""))}`,
-                branch: linkedWork.branch,
-                baseBranch: "main",
-                author: "codex",
-                mergedBy: "operator",
-                mergedAt: syncedAt,
-                updatedAt: syncedAt,
-                closedAt: syncedAt,
-                mergeCommitSha: `mock-merge-${linkedWork.key.toLowerCase()}`,
-                deliveryEvidence: {
-                  tests: { success: true, results: ["Mock CI: success"] },
-                  files: { success: true, results: [`${repo.id}/mock-delivery-file.js`] },
+        mergedPulls: [
+          ...(linkedWork
+            ? [
+                {
+                  number: Number(linkedWork.key.replace("TASK-", "")),
+                  title: `${linkedWork.key}: ${linkedWork.title}`,
+                  url: `https://github.com/${repoSlug(repo)}/pull/${Number(linkedWork.key.replace("TASK-", ""))}`,
+                  branch: linkedWork.branch,
+                  baseBranch: "main",
+                  author: "codex",
+                  mergedBy: "operator",
+                  mergedAt: syncedAt,
+                  updatedAt: syncedAt,
+                  closedAt: syncedAt,
+                  mergeCommitSha: `mock-merge-${linkedWork.key.toLowerCase()}`,
+                  deliveryEvidence: {
+                    tests: { success: true, results: ["Mock CI: success"] },
+                    files: { success: true, results: [`${repo.id}/mock-delivery-file.js`] },
+                  },
                 },
-              },
-            ]
-          : [],
+              ]
+            : []),
+          ...(repo.id === "marketing-site"
+            ? [
+                {
+                  number: 88,
+                  title: "Refresh the public homepage hero",
+                  url: `https://github.com/${repoSlug(repo)}/pull/88`,
+                  branch: "docs/homepage-hero",
+                  baseBranch: "main",
+                  author: "codex",
+                  mergedBy: "operator",
+                  mergedAt: syncedAt,
+                  updatedAt: syncedAt,
+                  closedAt: syncedAt,
+                  mergeCommitSha: "mock-merge-marketing-88",
+                  deliveryEvidence: {
+                    tests: { success: true, results: ["Mock CI: success"] },
+                    files: { success: true, results: ["marketing-site/src/hero.js"] },
+                  },
+                },
+              ]
+            : []),
+        ],
         latestIssues: [
           {
             number: 201,

@@ -44,6 +44,21 @@ export function fetchGithubSync() {
   return requestJson("/api/github/sync");
 }
 
+export function fetchGithubReconciliation() {
+  return requestJson("/api/github/reconciliation");
+}
+
+export function resolveGithubReconciliation(payload, { idempotencyKey } = {}) {
+  return requestJson("/api/github/reconciliation", {
+    method: "POST",
+    body: JSON.stringify({
+      ...payload,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }),
+    headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {},
+  });
+}
+
 export function fetchSystemStatus() {
   return requestJson("/api/system/status");
 }

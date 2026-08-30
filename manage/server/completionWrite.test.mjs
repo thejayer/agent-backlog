@@ -109,4 +109,61 @@ describe("resolveCompletionGithubEvidence", () => {
     expect(result.completionGithubMatches.pullRequests[0].mergedAt).toBe("2026-06-12T11:55:00.000Z");
     expect(result.verifiedCompletionWriteback.testsRun).toEqual(["mock tests"]);
   });
+
+  it("loads mock delivery evidence for a merge linked by branch or title instead of TASK key", async () => {
+    const titleOnlyUrl = "https://github.com/your-org/web-app/pull/88";
+    const fetchEvidence = vi.fn();
+    const result = await resolveCompletionGithubEvidence({
+      key: "TASK-201",
+      repo: "web-app",
+      githubPrUrl: titleOnlyUrl,
+      githubBranch: "docs/homepage-hero",
+    }, {
+      status: "done",
+      githubPrUrl: titleOnlyUrl,
+    }, {
+      githubCache: {
+        source: "mock",
+        repos: [{
+          id: "web-app",
+          name: "web-app",
+          slug: "your-org/web-app",
+          mergedPulls: [{
+            url: titleOnlyUrl,
+            number: 88,
+            title: "Refresh the public homepage hero",
+            branch: "docs/homepage-hero",
+            mergedAt: "2026-07-21T09:00:00.000Z",
+            mergeCommitSha: "def456",
+            deliveryEvidence: {
+              pullRequest: { url: titleOnlyUrl, number: 88, mergedAt: "2026-07-21T09:00:00.000Z" },
+              tests: { success: true, results: ["branch-linked tests"] },
+              files: { success: true, results: ["web-app/src/hero.js"] },
+            },
+          }],
+          latestPulls: [],
+          branches: [],
+          latestIssues: [],
+          failedWorkflowRuns: [],
+        }],
+      },
+      localGithubCache: true,
+      fetchEvidence,
+    });
+
+    expect(fetchEvidence).not.toHaveBeenCalled();
+    expect(result.completionGithubMatches.pullRequests[0]).toMatchObject({
+      url: titleOnlyUrl,
+      mergedAt: "2026-07-21T09:00:00.000Z",
+      mergeCommitSha: "def456",
+    });
+    expect(result.verifiedCompletionWriteback).toEqual({
+      testsRun: ["branch-linked tests"],
+      filesChanged: ["web-app/src/hero.js"],
+      evidenceCollection: {
+        tests: { success: true, results: ["branch-linked tests"] },
+        files: { success: true, results: ["web-app/src/hero.js"] },
+      },
+    });
+  });
 });

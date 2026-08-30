@@ -66,6 +66,7 @@ describe("permission matrix", () => {
       "backups",
       "backup-restore",
       "github-sync",
+      "github-reconciliation",
       "work-items",
       "reset",
       "agent-bootstrap",
@@ -119,6 +120,8 @@ describe("permission matrix", () => {
       ["POST", "/api/backups"],
       ["POST", "/api/backups/snapshot-1/restore"],
       ["POST", "/api/github/sync"],
+      ["GET", "/api/github/reconciliation"],
+      ["POST", "/api/github/reconciliation"],
       ["POST", "/api/agent/tasks/TASK-101/recovery"],
       ["GET", "/api/work-items"],
     ]) {

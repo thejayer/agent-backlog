@@ -62,6 +62,14 @@ export const manageRoutePolicies = Object.freeze([
     },
   },
   {
+    id: "github-reconciliation",
+    match: exact("/api/github/reconciliation"),
+    methods: {
+      GET: managePermissions.viewWorkspace,
+      POST: managePermissions.administerGithub,
+    },
+  },
+  {
     id: "github-link",
     match: exact("/api/github/link"),
     methods: { POST: managePermissions.administerGithub },

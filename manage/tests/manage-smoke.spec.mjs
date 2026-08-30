@@ -645,6 +645,54 @@ test("refreshes read-only GitHub cache", async ({ page, request }) => {
   await expect(webAppTile).toContainText("main");
   await expect(webAppTile).toContainText("Fresh");
   await expect(webAppTile.getByRole("link", { name: "Open repo" })).toHaveAttribute("href", /github\.com\/your-org\/web-app/);
+  await expect(page.getByRole("region", { name: "Merged pull request reconciliation" })).toBeVisible();
+});
+
+test("reconciles merged PRs from the GitHub cache without CSC leakage", async ({ page, request }) => {
+  const sync = await request.post("/api/github/sync", {
+    data: { mock: true },
+  });
+  expect(sync.ok()).toBe(true);
+
+  const listed = await request.get("/api/github/reconciliation");
+  expect(listed.ok()).toBe(true);
+  const listedPayload = await listed.json();
+  expect(listedPayload.reconciliation.totalMergedPullRequests).toBeGreaterThan(0);
+  const task101Match = listedPayload.reconciliation.unmatchedMergedPullRequests.find(
+    (pull) => pull.repoId === "web-app" && pull.number === 101,
+  );
+  const unmatchedMarketing = listedPayload.reconciliation.unmatchedMergedPullRequests.find(
+    (pull) => pull.repoId === "marketing-site" && pull.number === 88,
+  );
+  expect(task101Match.suggestedPacket).toMatchObject({ key: "TASK-101", confidence: "high" });
+  expect(unmatchedMarketing.suggestedPacket).toBeNull();
+  expect(JSON.stringify(listedPayload)).not.toMatch(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault/i);
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Repos" }).click();
+  const panel = page.getByRole("region", { name: "Merged pull request reconciliation" });
+  await expect(panel).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "Merged PRs without packets" })).toBeVisible();
+  await expect(panel).toContainText("TASK-101");
+  await expect(panel).toContainText("Refresh the public homepage hero");
+  await expect(panel).not.toContainText("Commerce Street");
+  await expect(panel).not.toContainText("CSC-");
+
+  await panel.getByRole("button", { name: "Link TASK-101 to web-app PR #101" }).click();
+  await expect(panel).toContainText("Linked TASK-101 to web-app #101");
+
+  await panel.getByRole("button", { name: "Create follow-up for marketing-site PR #88" }).click();
+  await expect(panel).toContainText(/Created TASK-\d+ for marketing-site #88/);
+
+  const linkedPacket = await request.get("/api/work-items");
+  const workItems = (await linkedPacket.json()).workItems;
+  expect(workItems.find((item) => item.key === "TASK-101")?.githubPrUrl).toBe(task101Match.url);
+  const followUpPacket = workItems.find((item) => item.githubPrUrl === unmatchedMarketing.url && item.key !== "TASK-101");
+  expect(followUpPacket.key).toMatch(/^TASK-\d+$/);
+  expect(followUpPacket.repo).toBe("marketing-site");
+  expect(followUpPacket.labels).toEqual(expect.arrayContaining(["github-sync", "follow-up"]));
+  expect(followUpPacket.project).toBe("Reconciliation");
+  expect(JSON.stringify(workItems)).not.toMatch(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault|Shipped reconciliation/i);
 });
 
 test("creates a GitHub issue handoff for a work packet", async ({ page, request }) => {
@@ -825,6 +873,8 @@ test("enforces agent least privilege and browser write protection", async ({ bas
       ["post", "/api/agent/reset", { confirmation: "RESET MANAGE" }],
       ["post", "/api/backups", { reason: "agent-denied" }],
       ["post", "/api/github/sync", { mock: true }],
+      ["get", "/api/github/reconciliation", undefined],
+      ["post", "/api/github/reconciliation", { action: "follow_up", pullRequestUrl: "https://github.com/your-org/marketing-site/pull/88" }],
       ["get", "/api/work-items", undefined],
     ]) {
       const response = await agent[method](path, { data, failOnStatusCode: false });

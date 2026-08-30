@@ -4629,3 +4629,43 @@ button.contribution-day.is-selected {
   font-family: var(--manage-font-mono);
   font-size: 11px;
 }
+
+@media (max-width: 980px) {
+  .initiative-summary-grid,
+  .initiative-workspace,
+  .initiative-field-grid,
+  .initiative-two-column,
+  .initiative-rollup {
+    grid-template-columns: 1fr;
+  }
+
+  .initiative-detail-head,
+  .initiative-section-head,
+  .initiative-timeline-head {
+    display: grid;
+  }
+
+  .initiative-timeline-sync {
+    justify-items: start;
+  }
+
+  .initiative-timeline-event {
+    grid-template-columns: 1fr;
+    margin-left: 0;
+    padding-left: 32px;
+  }
+
+  .initiative-section-head select {
+    max-width: none;
+  }
+
+  .initiative-timeline-filters button span,
+  .initiative-timeline-empty {
+    pointer-events: none;
+  }
+
+  .initiative-unlink {
+    position: relative;
+    z-index: 1;
+  }
+}

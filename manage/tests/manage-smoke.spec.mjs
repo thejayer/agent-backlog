@@ -698,9 +698,73 @@ test("routes shell navigation to focused workspaces", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Agent activity" })).toBeVisible();
   await expect(page.getByLabel("Agent activity")).toContainText("Active claims");
 
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Shipped" }).click();
+  await expect(page.getByRole("heading", { name: "Shipped work" })).toBeVisible();
+  await expect(page.getByLabel("Shipped work calendar")).toContainText("Contribution calendar");
+
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Backlog" }).click();
   await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Backlog", exact: true })).toContainText("TASK-101");
+});
+
+test("Shipped calendar groups completed packets and merged PRs, deep-links, and has no CSC leakage", async ({ page, request }) => {
+  const mockSync = await request.post("/api/github/sync", { data: { mock: true } });
+  expect(mockSync.ok()).toBe(true);
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Shipped" }).click();
+
+  const calendar = page.getByLabel("Shipped work calendar");
+  await expect(page.getByRole("heading", { name: "Shipped work" })).toBeVisible();
+  await expect(calendar).toContainText("Merged PRs");
+  await expect(page.getByLabel("Merged pull requests")).toContainText("web-app #101");
+  await expect(page.getByLabel("Merged pull requests").getByRole("link", { name: /TASK-101/ })).toHaveAttribute(
+    "href",
+    "https://github.com/your-org/web-app/pull/101",
+  );
+  await expect(page.getByLabel("Completed packets")).toContainText("No packets were marked done on this day.");
+  await expect(calendar).not.toContainText("Commerce Street");
+  await expect(calendar).not.toContainText("CSC-");
+  await expect(calendar).not.toContainText("Harbor");
+  await expect(calendar).not.toContainText("RegVault");
+
+  const completed = await request.patch("/api/work-items/TASK-101", {
+    data: {
+      status: "done",
+      completionOverrideReason: "Calendar smoke documented non-code completion.",
+      githubPrUrl: "https://github.com/your-org/web-app/pull/101",
+    },
+  });
+  expect(completed.ok(), await completed.text()).toBe(true);
+
+  await page.reload();
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Shipped" }).click();
+
+  await expect(page.getByLabel("Completed packets")).toContainText("TASK-101");
+  await expect(page.getByLabel("Completed packets")).toContainText("web-app");
+  await expect(page.getByLabel("Merged pull requests")).toContainText("web-app #101");
+  await expect(page.getByRole("button", { name: "TASK-101", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Shipped work calendar")).not.toContainText("CSC-");
+  await expect(page.getByLabel("Shipped work calendar")).not.toContainText("COM-");
+
+  await page.getByRole("button", { name: /TASK-101/ }).first().click();
+  await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
+  await expect(page.locator(".detail-panel")).toContainText("TASK-101");
+  await expect(page.locator(".detail-panel")).toContainText("Fix contact import duplicate handling");
+});
+
+test("Shipped calendar empty day copy stays generic", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Shipped" }).click();
+
+  const year = new Date().getFullYear();
+  await page.getByRole("button", { name: `January 1, ${year}: 0 work records` }).click();
+
+  const dayDetails = page.getByLabel("Selected day details");
+  await expect(dayDetails).toContainText("No shipped work recorded");
+  await expect(dayDetails).toContainText("Select a darker square");
+  await expect(dayDetails).not.toContainText("Commerce Street");
+  await expect(dayDetails).not.toContainText("CSC-");
 });
 
 test("exposes deployment health and auth provider config", async ({ playwright, request }) => {

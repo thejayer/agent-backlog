@@ -114,6 +114,9 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
 - **Today attention inbox** — ranks packets that need a human now: incomplete
   review handoffs, aging reviews, stuck or stale agent runs, and unlinked
   merged PRs. Each item deep-links to Review, Agents, or Repos.
+- **Shipped calendar** — a day calendar of completed packets (`completedAt`)
+  and merged PRs from the GitHub cache (`mergedAt`). Packet rows deep-link
+  back to the backlog.
 
 ## API
 

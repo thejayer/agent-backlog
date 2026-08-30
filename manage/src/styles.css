@@ -1876,11 +1876,11 @@ textarea {
 }
 
 .pf-medium {
-  --priority-color: var(--manage-rust);
+  --priority-color: color-mix(in srgb, var(--manage-rust) 72%, #000 28%);
 }
 
 .pf-low {
-  --priority-color: var(--manage-faint);
+  --priority-color: var(--manage-muted);
 }
 
 .label-list {
@@ -1902,7 +1902,7 @@ textarea {
   border: 1px solid var(--manage-accent-line);
   border-radius: 8px;
   background: var(--manage-accent-soft);
-  color: var(--manage-blue);
+  color: var(--manage-ink);
   font-size: 11px;
   font-weight: 850;
   white-space: nowrap;
@@ -1935,19 +1935,19 @@ textarea {
 .status-ready {
   --pill-bg: color-mix(in srgb, var(--manage-green) 12%, transparent);
   --pill-border: color-mix(in srgb, var(--manage-green) 28%, transparent);
-  --pill-color: var(--manage-green);
+  --pill-color: color-mix(in srgb, var(--manage-green) 70%, #000 30%);
 }
 
 .status-info {
   --pill-bg: color-mix(in srgb, var(--manage-blue) 12%, transparent);
   --pill-border: color-mix(in srgb, var(--manage-blue) 28%, transparent);
-  --pill-color: var(--manage-blue);
+  --pill-color: color-mix(in srgb, var(--manage-blue) 62%, #000 38%);
 }
 
 .status-review {
   --pill-bg: color-mix(in srgb, var(--manage-rust) 12%, transparent);
   --pill-border: color-mix(in srgb, var(--manage-rust) 28%, transparent);
-  --pill-color: var(--manage-rust);
+  --pill-color: color-mix(in srgb, var(--manage-rust) 70%, #000 30%);
 }
 
 .status-done {
@@ -1959,7 +1959,7 @@ textarea {
 .status-blocked {
   --pill-bg: color-mix(in srgb, var(--manage-red) 12%, transparent);
   --pill-border: color-mix(in srgb, var(--manage-red) 28%, transparent);
-  --pill-color: var(--manage-red);
+  --pill-color: color-mix(in srgb, var(--manage-red) 68%, #000 32%);
 }
 
 .status-stale {

@@ -176,7 +176,7 @@
 }
 
 .shell-control span {
-  color: var(--manage-faint);
+  color: var(--manage-muted);
   font-size: 10px;
   font-weight: 850;
   line-height: 1;
@@ -213,7 +213,7 @@
   max-width: 190px;
   border-color: var(--manage-accent-line);
   background: var(--manage-accent-soft);
-  color: var(--manage-blue);
+  color: var(--manage-ink);
 }
 
 .sync-saving {

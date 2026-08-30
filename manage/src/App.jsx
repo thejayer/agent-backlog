@@ -2136,7 +2136,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
                 </button>
               </div>
             </section>
-            <pre className="prompt-preview">{selectedPrompt}</pre>
+            <pre className="prompt-preview" tabIndex={0} aria-label="Rendered agent prompt">{selectedPrompt}</pre>
             <div className="endpoint-list">
               <Endpoint label="Task URL" value={selectedTaskUrl} />
               <Endpoint label="Instructions" value="/agent/instructions.md" />

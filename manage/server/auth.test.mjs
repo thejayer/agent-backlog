@@ -12,6 +12,7 @@ import {
   getMissingProductionAuthConfig,
   getOperatorAccessToken,
   getSession,
+  authorizeWorkItemCompletion,
   hasValidBearer,
   hasValidLoginToken,
   hasValidOAuthState,
@@ -371,5 +372,22 @@ describe("github OAuth user authorization", () => {
     for (const allowedLogins of ["allowed-user", { 0: "allowed-user" }, null]) {
       expect(() => authorizeGithubUser({ login: "allowed-user" }, allowedLogins)).toThrow(/not allowed/);
     }
+  });
+});
+
+describe("authorizeWorkItemCompletion", () => {
+  it("allows agents to complete with evidence but not with an override", () => {
+    const session = { user: { role: "agent", login: "Bearer token" } };
+    expect(authorizeWorkItemCompletion(session)).toEqual(session.user);
+    expect(() => authorizeWorkItemCompletion(session, { override: true })).toThrow(/Operator role required/);
+  });
+
+  it("allows operators to complete with an override", () => {
+    const session = { user: { role: "operator", login: "operator" } };
+    expect(authorizeWorkItemCompletion(session, { override: true })).toEqual(session.user);
+  });
+
+  it("requires a session", () => {
+    expect(() => authorizeWorkItemCompletion(null)).toThrow(/Authentication required/);
   });
 });

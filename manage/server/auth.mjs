@@ -6,6 +6,8 @@ const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12;
 const OAUTH_STATE_MAX_AGE_SECONDS = 10 * 60;
 const LOCAL_AGENT_TOKEN = "manage-local-agent";
 const LOCAL_OPERATOR_TOKEN = "manage-local";
+const completionRoles = new Set(["admin", "operator", "agent"]);
+const completionOverrideRoles = new Set(["admin", "operator"]);
 
 function base64url(value) {
   return Buffer.from(value).toString("base64url");
@@ -311,6 +313,24 @@ export function getSession(req) {
 
 export function isAuthenticated(req) {
   return Boolean(getSession(req));
+}
+
+export function authorizeWorkItemCompletion(session, { override = false } = {}) {
+  if (!session?.user) {
+    throw Object.assign(new Error("Authentication required"), { statusCode: 401 });
+  }
+
+  const role = String(session.user.role || "").trim().toLowerCase();
+  const allowedRoles = override ? completionOverrideRoles : completionRoles;
+
+  if (!allowedRoles.has(role)) {
+    throw Object.assign(
+      new Error(override ? "Operator role required for completion override" : "Completion role required"),
+      { statusCode: 403 },
+    );
+  }
+
+  return session.user;
 }
 
 function parseList(value) {

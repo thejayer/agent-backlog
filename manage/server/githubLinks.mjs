@@ -30,6 +30,24 @@ function repoMatches(workItem, repo) {
   return repo.id === workItem.repo || repo.name === workItem.repo || repo.slug?.endsWith(`/${workItem.repo}`);
 }
 
+function normalizedGithubUrl(value) {
+  return String(value || "").trim().replace(/\/$/, "").toLowerCase();
+}
+
+export function uniquePullRequests(pullRequests = []) {
+  const byIdentity = new Map();
+
+  for (const pullRequest of pullRequests) {
+    const identity = normalizedGithubUrl(pullRequest?.url) || (pullRequest?.number ? String(pullRequest.number) : "");
+
+    if (identity && !byIdentity.has(identity)) {
+      byIdentity.set(identity, pullRequest);
+    }
+  }
+
+  return [...byIdentity.values()];
+}
+
 export function countGithubMatches(matches) {
   return countMatches({
     pullRequests: matches?.pullRequests || [],
@@ -60,7 +78,7 @@ export function findGithubMatchesForItem(workItem, githubCache) {
     };
   }
 
-  const pullRequests = (repo.latestPulls || []).filter((pullRequest) =>
+  const pullRequests = uniquePullRequests([...(repo.mergedPulls || []), ...(repo.latestPulls || [])]).filter((pullRequest) =>
     matchesAnyField(pullRequest, ["title", "branch", "url"], variants),
   );
   const branches = (repo.branches || []).filter((branch) => containsKey(branch.name, variants));

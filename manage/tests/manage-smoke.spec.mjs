@@ -279,7 +279,7 @@ test("creates packets from templates and duplicates packets", async ({ page }) =
   await expect(page.locator(".detail-panel")).toContainText("Copy of Refresh analytics export job");
 });
 
-test("review queue quick actions update packet status", async ({ page, request }) => {
+test("review queue gates done until delivery evidence or an override exists", async ({ page, request }) => {
   const claim = await request.post("/api/agent/tasks/TASK-101/claim", {
     data: { agent: "Codex" },
   });
@@ -300,10 +300,23 @@ test("review queue quick actions update packet status", async ({ page, request }
   });
   expect(status.ok()).toBe(true);
 
+  const blockedDone = await request.post("/api/agent/tasks/TASK-101/status", {
+    data: { status: "done", note: "Trying to close without verified evidence." },
+  });
+  expect(blockedDone.status()).toBe(409);
+  expect((await blockedDone.json()).error).toContain("Completion evidence required");
+
+  await request.post("/api/github/sync", { data: { mock: true } });
+  const linked = await request.post("/api/work-items/TASK-101/link-github");
+  expect(linked.ok()).toBe(true);
+
   await request.patch("/api/work-items/TASK-102", {
     data: { status: "needs_review", agent: "Claude Code", claimedBy: "Claude Code" },
   });
   await request.patch("/api/work-items/TASK-103", {
+    data: { status: "needs_review", agent: "Codex", claimedBy: "Codex" },
+  });
+  await request.patch("/api/work-items/TASK-104", {
     data: { status: "needs_review", agent: "Codex", claimedBy: "Codex" },
   });
 
@@ -315,6 +328,8 @@ test("review queue quick actions update packet status", async ({ page, request }
   await expect(task101Card).toContainText("codex/task-101-contact-import-dedupe");
   await expect(task101Card).toContainText("npm.cmd test");
   await expect(task101Card).toContainText("web-app/src/lib/contactMatcher.js");
+  await expect(task101Card.getByText("Evidence complete")).toBeVisible();
+  await expect(task101Card.getByText("Merged pull request", { exact: true })).toBeVisible();
 
   await task101Card.getByRole("button", { name: "Open packet" }).click();
   await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
@@ -322,14 +337,23 @@ test("review queue quick actions update packet status", async ({ page, request }
 
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Review", exact: true }).click();
   const doneCard = page.locator(".review-card").filter({ hasText: "TASK-101" });
+  await expect(doneCard.getByRole("button", { name: "Mark done" })).toBeEnabled();
   await doneCard.getByRole("button", { name: "Mark done" }).click();
   await expect(doneCard).toHaveCount(0);
 
   const changesCard = page.locator(".review-card").filter({ hasText: "TASK-102" });
+  await expect(changesCard.getByText("Completion blocked")).toBeVisible();
+  await expect(changesCard.getByRole("button", { name: "Mark done" })).toBeDisabled();
   await changesCard.getByRole("button", { name: "Needs changes" }).click();
   await expect(changesCard).toHaveCount(0);
 
-  const blockedCard = page.locator(".review-card").filter({ hasText: "TASK-103" });
+  const overrideCard = page.locator(".review-card").filter({ hasText: "TASK-103" });
+  await overrideCard.getByRole("button", { name: "Non-code override" }).click();
+  await overrideCard.getByLabel("Completion override reason for TASK-103").fill("Planning packet completed without a code delivery.");
+  await overrideCard.getByRole("button", { name: "Complete with override" }).click();
+  await expect(overrideCard).toHaveCount(0);
+
+  const blockedCard = page.locator(".review-card").filter({ hasText: "TASK-104" });
   await blockedCard.getByRole("button", { name: "Blocked" }).click();
   await expect(blockedCard).toHaveCount(0);
 
@@ -349,11 +373,55 @@ test("review queue quick actions update packet status", async ({ page, request }
   await expect
     .poll(async () => {
       const payload = await (await request.get("/api/work-items")).json();
-      blocked = payload.workItems.find((item) => item.key === "TASK-103");
+      blocked = payload.workItems.find((item) => item.key === "TASK-104");
       return blocked.status;
     })
     .toBe("blocked");
   expect(blocked.blockedBy).toContain("review queue");
+  const items = await (await request.get("/api/work-items")).json();
+  expect(items.workItems.find((item) => item.key === "TASK-101").completionEvidence).toMatchObject({
+    testsRun: ["Mock CI: success"],
+    filesChanged: ["web-app/mock-delivery-file.js"],
+  });
+  expect(items.workItems.find((item) => item.key === "TASK-103").completionOverride).toMatchObject({
+    reason: "Planning packet completed without a code delivery.",
+  });
+});
+
+test("review evidence gate supports merged and override completion on a narrow viewport", async ({ page, request }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const claim = await request.post("/api/agent/tasks/TASK-101/claim", { data: { agent: "Codex" } });
+  const claimed = await claim.json();
+  await request.post("/api/agent/tasks/TASK-101/status", {
+    data: {
+      status: "needs_review",
+      agent: "Codex",
+      agentRunId: claimed.workItem.agentRunId,
+      note: "Mobile review delivery is ready.",
+      githubPrUrl: "https://github.com/your-org/web-app/pull/101",
+      testsRun: ["npm.cmd test"],
+      filesChanged: ["web-app/src/lib/contactMatcher.js"],
+    },
+  });
+  await request.post("/api/github/sync", { data: { mock: true } });
+  await request.post("/api/work-items/TASK-101/link-github");
+  await request.patch("/api/work-items/TASK-102", { data: { status: "needs_review" } });
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Review", exact: true }).click();
+
+  const mergedCard = page.locator(".review-card").filter({ hasText: "TASK-101" });
+  await expect(mergedCard.getByText("Ready to complete")).toBeVisible();
+  await mergedCard.getByRole("button", { name: "Mark done" }).click();
+  await expect(mergedCard).toHaveCount(0);
+
+  const overrideCard = page.locator(".review-card").filter({ hasText: "TASK-102" });
+  await expect(overrideCard.getByText("Completion blocked")).toBeVisible();
+  await expect(overrideCard.getByRole("button", { name: "Mark done" })).toBeDisabled();
+  await overrideCard.getByRole("button", { name: "Non-code override" }).click();
+  await overrideCard.getByLabel("Completion override reason for TASK-102").fill("Mobile non-code review completed with documented rationale.");
+  await overrideCard.getByRole("button", { name: "Complete with override" }).click();
+  await expect(overrideCard).toHaveCount(0);
 });
 
 test("serves agent Markdown and next-task JSON", async ({ request }) => {

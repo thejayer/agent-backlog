@@ -1,6 +1,7 @@
 import { buildAgentBootstrap, buildAgentInstructions, buildAgentPrompt, findNextWorkItem } from "../src/lib/agentPrompt.mjs";
 import { labelOptions, repositories, statusOptions } from "../src/data/workItems.mjs";
 import {
+  authorizeWorkItemCompletion,
   clearSessionCookie,
   createSessionCookie,
   getAccessToken,
@@ -13,7 +14,7 @@ import {
 import { authorizeManageRequest, managePermissions, requireBrowserWriteProtection, roleHasPermission } from "./authorization.mjs";
 import { findGithubMatchesForItem, hasGithubMatches } from "./githubLinks.mjs";
 import { createGithubIssueForWorkItem } from "./githubIssues.mjs";
-import { readGithubCache, syncGithubCache } from "./githubSync.mjs";
+import { fetchPullRequestDeliveryEvidence, parseGithubPullRequestUrl, readGithubCache, syncGithubCache } from "./githubSync.mjs";
 import { completeGithubLogin, getGithubLoginStart } from "./githubOAuth.mjs";
 import { createStateSnapshot, getStorageStatus, listStateSnapshots, restoreStateSnapshot } from "./storage.mjs";
 import {
@@ -146,6 +147,133 @@ function githubStatusSummary() {
 async function findWorkItem(key) {
   const items = await listWorkItems();
   return items.find((candidate) => candidate.key === String(key || "").toUpperCase());
+}
+
+function completionOverrideRequested(payload = {}) {
+  return Boolean(String(payload.completionOverrideReason || "").trim());
+}
+
+function normalizedGithubUrl(value) {
+  return String(value || "").trim().replace(/\/$/, "");
+}
+
+function completionPullRequest(workItem, payload, matches) {
+  const requestedUrl = normalizedGithubUrl(
+    payload.githubPrUrl || workItem.lastAgentUpdate?.githubPrUrl || workItem.githubPrUrl,
+  );
+
+  if (!requestedUrl) {
+    return null;
+  }
+
+  return (matches.pullRequests || []).find(
+    (pullRequest) => normalizedGithubUrl(pullRequest?.url) === requestedUrl && pullRequest?.mergedAt,
+  ) || null;
+}
+
+function verifiedCompletionWriteback(evidence) {
+  const testsRun = Array.isArray(evidence?.tests?.results) ? evidence.tests.results : [];
+  const filesChanged = Array.isArray(evidence?.files?.results) ? evidence.files.results : [];
+
+  return {
+    testsRun,
+    filesChanged,
+    evidenceCollection: {
+      tests: { success: evidence?.tests?.success === true, results: testsRun },
+      files: { success: evidence?.files?.success === true, results: filesChanged },
+    },
+  };
+}
+
+async function prepareCompletionWrite(req, key, payload = {}) {
+  const session = getSession(req);
+
+  if (String(payload.status || "").trim() !== "done") {
+    return { principal: session?.user || null, verifiedCompletionWriteback: null };
+  }
+
+  const override = completionOverrideRequested(payload);
+  const principal = authorizeWorkItemCompletion(session, { override });
+  let workItem = await findWorkItem(key);
+
+  if (!workItem || workItem.status === "done" || override) {
+    return { principal, verifiedCompletionWriteback: null };
+  }
+
+  const cachedGithub = await readGithubCache();
+  const localGithubCache = ["mock", "seed"].includes(cachedGithub?.source);
+  const githubCache = localGithubCache
+    ? cachedGithub
+    : await syncGithubCache();
+  const matches = findGithubMatchesForItem(workItem, githubCache);
+
+  if (hasGithubMatches(matches)) {
+    const linked = await applyGithubMatches(workItem.key, matches);
+    workItem = linked.workItem;
+  }
+
+  let pullRequest = completionPullRequest(workItem, payload, matches);
+
+  if (!pullRequest && !localGithubCache) {
+    const parsed = parseGithubPullRequestUrl(
+      payload.githubPrUrl || workItem.lastAgentUpdate?.githubPrUrl || workItem.githubPrUrl,
+    );
+
+    if (parsed) {
+      try {
+        const evidence = await fetchPullRequestDeliveryEvidence(parsed.slug, parsed.number);
+        const fetched = evidence.pullRequest;
+        if (fetched?.mergedAt) {
+          await applyGithubMatches(workItem.key, {
+            source: githubCache?.source || "github-cache",
+            repoSlug: parsed.slug,
+            bestPrUrl: fetched.url,
+            bestBranch: workItem.githubBranch || "",
+            pullRequests: [{
+              url: fetched.url,
+              number: fetched.number,
+              mergedAt: fetched.mergedAt,
+              mergeCommitSha: fetched.mergeCommitSha,
+            }],
+            branches: [],
+            issues: [],
+            workflowRuns: [],
+          });
+          return {
+            principal,
+            verifiedCompletionWriteback: verifiedCompletionWriteback(evidence),
+          };
+        }
+      } catch {
+        // Fall through to the packet-level evidence check. A missing or
+        // unreachable pull request is treated as incomplete delivery evidence.
+      }
+    }
+  }
+
+  if (!pullRequest) {
+    return { principal, verifiedCompletionWriteback: null };
+  }
+
+  try {
+    const evidence = localGithubCache
+      ? pullRequest.deliveryEvidence
+      : await fetchPullRequestDeliveryEvidence(matches.repoSlug, pullRequest.number);
+
+    if (
+      !evidence
+      || normalizedGithubUrl(evidence.pullRequest?.url || pullRequest.url) !== normalizedGithubUrl(pullRequest.url)
+    ) {
+      throw new Error("GitHub returned evidence for a different pull request");
+    }
+
+    return {
+      principal,
+      verifiedCompletionWriteback: verifiedCompletionWriteback(evidence),
+    };
+  } catch (error) {
+    throw Object.assign(new Error(`Unable to verify delivery evidence: ${error.message}`), { statusCode: 409 });
+  }
 }
 
 async function currentBackupState() {
@@ -505,7 +633,10 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await patchWorkItem(decodeURIComponent(workItemMatch[1]), await readJsonBody(req));
+    const key = decodeURIComponent(workItemMatch[1]);
+    const body = await readJsonBody(req);
+    const completion = await prepareCompletionWrite(req, key, body);
+    const result = await patchWorkItem(key, body, completion);
     sendJson(res, 200, result);
     return true;
   }
@@ -638,7 +769,10 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await updateTaskStatus(decodeURIComponent(statusMatch[1]), await readJsonBody(req));
+    const key = decodeURIComponent(statusMatch[1]);
+    const body = await readJsonBody(req);
+    const completion = await prepareCompletionWrite(req, key, body);
+    const result = await updateTaskStatus(key, body, completion);
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
     return true;
   }

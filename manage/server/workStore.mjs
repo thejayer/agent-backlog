@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { priorityOptions, statusOptions, workItems as seedWorkItems } from "../src/data/workItems.mjs";
 import { AGENT_RUN_EXTEND_LEASE_MINUTES } from "../src/lib/agentRunContract.mjs";
+import {
+  MIN_COMPLETION_OVERRIDE_REASON_LENGTH,
+  normalizeCompletionOverrideReason,
+  normalizeEvidenceCollection,
+  reviewCompletionEvidence,
+} from "../src/lib/reviewEvidence.mjs";
 import { deriveAgentRunHealth, isLeaseActive, normalizeLeaseMinutes } from "./agentRunHealth.mjs";
 import { readJsonState, writeJsonState } from "./storage.mjs";
 
@@ -74,6 +80,87 @@ function appendAgentEvent(item, event) {
   return [...(Array.isArray(item.agentEvents) ? item.agentEvents : []), event].slice(-20);
 }
 
+function resolveCompletedAt(currentItem, nextStatus, now) {
+  if (nextStatus !== "done") {
+    return "";
+  }
+
+  return currentItem.status === "done" && currentItem.completedAt ? currentItem.completedAt : now;
+}
+
+function completionDecision(item, payload = {}) {
+  const evidence = reviewCompletionEvidence(item, { writeback: payload });
+  const overrideReason = normalizeCompletionOverrideReason(payload.completionOverrideReason);
+
+  if (overrideReason && overrideReason.length < MIN_COMPLETION_OVERRIDE_REASON_LENGTH) {
+    throw Object.assign(
+      new Error(`Completion override reason must be at least ${MIN_COMPLETION_OVERRIDE_REASON_LENGTH} characters.`),
+      { statusCode: 400 },
+    );
+  }
+
+  if (!evidence.canComplete && !overrideReason) {
+    throw Object.assign(
+      new Error(`Completion evidence required: ${evidence.missing.map((check) => check.label).join(", ")}.`),
+      { statusCode: 409 },
+    );
+  }
+
+  return { evidence, overrideReason };
+}
+
+function trustedCompletionWriteback(payload, verifiedWriteback) {
+  const trusted = verifiedWriteback && typeof verifiedWriteback === "object" ? verifiedWriteback : {};
+  const testsRun = splitWritebackLines(trusted, "testsRun", "testCommandsRun");
+  const filesChanged = splitWritebackLines(trusted, "filesChanged");
+
+  return {
+    ...payload,
+    testsRun,
+    filesChanged,
+    evidenceCollection: normalizeEvidenceCollection(trusted.evidenceCollection, { testsRun, filesChanged }),
+  };
+}
+
+function completionPrincipalActor(principal) {
+  return String(principal?.login || principal?.name || principal?.sub || "Operator").trim() || "Operator";
+}
+
+function completionState(currentItem, nextStatus, decision, now, principal) {
+  if (nextStatus !== "done") {
+    return {
+      completionEvidence: null,
+      completionOverride: null,
+    };
+  }
+
+  if (!decision) {
+    return {
+      completionEvidence: currentItem.completionEvidence || null,
+      completionOverride: currentItem.completionOverride || null,
+    };
+  }
+
+  return {
+    completionEvidence: decision.evidence.completionEvidence,
+    completionOverride: decision.overrideReason
+      ? {
+          at: now,
+          actor: completionPrincipalActor(principal),
+          reason: decision.overrideReason,
+        }
+      : null,
+  };
+}
+
+function emptyCompletionState() {
+  return {
+    completionEvidence: null,
+    completionOverride: null,
+    completedAt: "",
+  };
+}
+
 function countGithubMatches(matches) {
   return (
     (matches.pullRequests || []).length +
@@ -106,6 +193,8 @@ function normalizeWorkItem(item) {
   return {
     ...item,
     labels: splitLabels(hasLabels ? item.labels : seedLabelsByKey.get(item.key)),
+    completionEvidence: item.completionEvidence || null,
+    completionOverride: item.completionOverride || null,
   };
 }
 
@@ -158,6 +247,10 @@ export async function createWorkItem(payload) {
     throw Object.assign(new Error(`Invalid status: ${status}`), { statusCode: 400 });
   }
 
+  if (status === "done") {
+    throw Object.assign(new Error("New work packets cannot be created as done."), { statusCode: 400 });
+  }
+
   const workItem = {
     id: `w-${key.toLowerCase()}`,
     key,
@@ -191,6 +284,9 @@ export async function createWorkItem(payload) {
     leaseExpiresAt: "",
     agentEvents: [],
     lastAgentUpdate: null,
+    completionEvidence: null,
+    completionOverride: null,
+    completedAt: "",
     createdAt: now,
     updatedAt: now,
   };
@@ -204,7 +300,7 @@ export async function createWorkItem(payload) {
   };
 }
 
-export async function patchWorkItem(key, updates) {
+export async function patchWorkItem(key, updates, options = {}) {
   const items = await readWorkItems();
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
@@ -271,10 +367,37 @@ export async function patchWorkItem(key, updates) {
             : value;
   }
 
+  const currentItem = items[index];
+  const now = new Date().toISOString();
+  const isNewCompletion = cleaned.status === "done" && currentItem.status !== "done";
+  const decision = isNewCompletion
+    ? completionDecision(currentItem, trustedCompletionWriteback(updates, options.verifiedCompletionWriteback))
+    : null;
+  const completion = hasPayloadField(cleaned, "status")
+    ? completionState(currentItem, cleaned.status, decision, now, options.principal)
+    : {
+        completionEvidence: currentItem.completionEvidence || null,
+        completionOverride: currentItem.completionOverride || null,
+      };
+  const overrideEvent = completion.completionOverride && decision
+    ? {
+        type: "completion_override",
+        at: now,
+        agent: completion.completionOverride.actor,
+        status: "done",
+        note: completion.completionOverride.reason,
+        reason: completion.completionOverride.reason,
+      }
+    : null;
   const nextItem = {
-    ...items[index],
+    ...currentItem,
     ...cleaned,
-    updatedAt: new Date().toISOString(),
+    ...completion,
+    agentEvents: overrideEvent ? appendAgentEvent(currentItem, overrideEvent) : currentItem.agentEvents || [],
+    completedAt: Object.prototype.hasOwnProperty.call(cleaned, "status")
+      ? resolveCompletedAt(currentItem, cleaned.status, now)
+      : currentItem.completedAt || "",
+    updatedAt: now,
   };
   const nextItems = [...items];
   nextItems[index] = nextItem;
@@ -352,6 +475,7 @@ export async function claimWorkItem(key, payload = {}, { allowForce = false } = 
       agentRunId,
     },
     agentEvents: appendAgentEvent(currentItem, event),
+    ...emptyCompletionState(),
     updatedAt: claimedAt,
   };
   const nextItems = [...items];
@@ -509,6 +633,7 @@ export async function recoverAgentRun(key, payload = {}, { actor: authenticatedA
       agentRunId: previousRunId,
     },
     agentEvents: appendAgentEvent(currentItem, event),
+    ...emptyCompletionState(),
     updatedAt: at,
   };
   const nextItems = [...items];
@@ -522,7 +647,7 @@ export async function recoverAgentRun(key, payload = {}, { actor: authenticatedA
   };
 }
 
-export async function updateTaskStatus(key, payload = {}) {
+export async function updateTaskStatus(key, payload = {}, options = {}) {
   const status = String(payload.status || "").trim();
 
   if (!allowedStatuses.has(status)) {
@@ -542,12 +667,39 @@ export async function updateTaskStatus(key, payload = {}) {
   const agentName = String(payload.agent || currentItem.claimedBy || currentItem.agent || "Unspecified agent").trim();
   const agentRunId = String(payload.agentRunId || currentItem.agentRunId || "").trim();
   const note = String(payload.note || "").trim();
-  const testsRun = splitWritebackLines(payload, "testsRun", "testCommandsRun");
-  const filesChanged = splitWritebackLines(payload, "filesChanged");
+  const suppliedTestsRun = splitWritebackLines(payload, "testsRun", "testCommandsRun");
+  const suppliedFilesChanged = splitWritebackLines(payload, "filesChanged");
+  const suppliedEvidenceCollection = normalizeEvidenceCollection(payload.evidenceCollection, {
+    testsRun: suppliedTestsRun,
+    filesChanged: suppliedFilesChanged,
+  });
   const blockers = splitWritebackLines(payload, "blockers");
   const nextSteps = splitWritebackLines(payload, "nextSteps");
   const githubBranch = payload.githubBranch === undefined ? currentItem.githubBranch : String(payload.githubBranch || "").trim();
   const githubPrUrl = payload.githubPrUrl === undefined ? currentItem.githubPrUrl : String(payload.githubPrUrl || "").trim();
+  const normalizedWriteback = {
+    ...payload,
+    ...(hasPayloadField(payload, "testsRun") || hasPayloadField(payload, "testCommandsRun")
+      ? { testsRun: suppliedTestsRun }
+      : {}),
+    ...(hasPayloadField(payload, "filesChanged") ? { filesChanged: suppliedFilesChanged } : {}),
+    ...(hasPayloadField(payload, "evidenceCollection") ||
+    hasPayloadField(payload, "testsRun") ||
+    hasPayloadField(payload, "testCommandsRun") ||
+    hasPayloadField(payload, "filesChanged")
+      ? { evidenceCollection: suppliedEvidenceCollection }
+      : {}),
+  };
+  const isNewCompletion = status === "done" && currentItem.status !== "done";
+  const completionWriteback = isNewCompletion
+    ? trustedCompletionWriteback(payload, options.verifiedCompletionWriteback)
+    : normalizedWriteback;
+  const testsRun = isNewCompletion ? completionWriteback.testsRun : suppliedTestsRun;
+  const filesChanged = isNewCompletion ? completionWriteback.filesChanged : suppliedFilesChanged;
+  const evidenceCollection = isNewCompletion
+    ? completionWriteback.evidenceCollection
+    : suppliedEvidenceCollection;
+  const decision = isNewCompletion ? completionDecision(currentItem, completionWriteback) : null;
   const lastAgentUpdate = {
     at: now,
     agent: agentName,
@@ -558,22 +710,26 @@ export async function updateTaskStatus(key, payload = {}) {
     githubPrUrl,
     testsRun,
     filesChanged,
+    evidenceCollection,
     blockers,
     nextSteps,
   };
+  const completion = completionState(currentItem, status, decision, now, options.principal);
   const event = {
-    type: "status",
+    type: decision?.overrideReason ? "completion_override" : "status",
     at: now,
-    agent: agentName,
+    agent: decision?.overrideReason ? completion.completionOverride.actor : agentName,
     status,
-    note,
+    note: note || decision?.overrideReason || "",
     agentRunId,
     githubBranch,
     githubPrUrl,
     testsRun,
     filesChanged,
+    evidenceCollection,
     blockers,
     nextSteps,
+    ...(decision?.overrideReason ? { completionOverrideReason: decision.overrideReason } : {}),
   };
   const nextItem = {
     ...currentItem,
@@ -583,6 +739,8 @@ export async function updateTaskStatus(key, payload = {}) {
     githubPrUrl,
     blockedBy: hasPayloadField(payload, "blockers") ? blockers.join("\n") : currentItem.blockedBy,
     leaseExpiresAt: completedStatuses.has(status) ? "" : currentItem.leaseExpiresAt,
+    completedAt: resolveCompletedAt(currentItem, status, now),
+    ...completion,
     lastAgentUpdate,
     agentEvents: appendAgentEvent(currentItem, event),
     updatedAt: now,
@@ -753,6 +911,9 @@ export async function importGithubIssues(githubCache, { repo: repoFilter = "", l
         leaseExpiresAt: "",
         agentEvents: [],
         lastAgentUpdate: null,
+        completionEvidence: null,
+        completionOverride: null,
+        completedAt: "",
         createdAt: now,
         updatedAt: now,
       };

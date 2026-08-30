@@ -96,6 +96,11 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
 - **Status writeback** — `POST /api/agent/tasks/{key}/status` records
   `needs_review` / `done` / `blocked` with branch, PR, tests run, files changed,
   blockers, and next steps, and appends to a per-packet event log.
+- **Review completion gate** — marking a packet `done` requires delivery
+  evidence: a reviewer-facing note, a linked PR that GitHub reports as merged,
+  successful test results, and changed files. Operators can still complete
+  without that evidence by recording an explicit override reason on the packet.
+  Agent writebacks that claim `done` without verified evidence are rejected.
 - **Readiness + priority ranking** — `next` hands out the highest-priority,
   most-complete `ready_for_agent` packet first.
 - **GitHub sync (optional)** — pull open PRs/issues/branches/failed runs per repo

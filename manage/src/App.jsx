@@ -18,6 +18,10 @@ import {
 } from "./lib/agentPrompt.mjs";
 import { labelOptions, priorityOptions, repositories, statusOptions, workItems as seedWorkItems } from "./data/workItems.mjs";
 import {
+  MIN_COMPLETION_OVERRIDE_REASON_LENGTH,
+  reviewCompletionEvidence,
+} from "./lib/reviewEvidence.mjs";
+import {
   claimWorkItem as claimWorkItemRequest,
   createBackup as createBackupRequest,
   createGithubIssue as createGithubIssueRequest,
@@ -353,6 +357,10 @@ function formatEventType(type) {
 
   if (type === "recovery") {
     return "Recovery action";
+  }
+
+  if (type === "completion_override") {
+    return "Completion override";
   }
 
   return type || "Event";
@@ -1169,6 +1177,32 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     }
   }
 
+  async function refreshReviewEvidence(key) {
+    setLinkState("linking");
+    setGithubState("syncing");
+    setGithubMessage(`Refreshing delivery evidence for ${key}`);
+
+    try {
+      const syncPayload = await syncGithub();
+      setGithubCache(syncPayload.github);
+      const payload = await linkGithubWorkItem(key);
+      setItems(payload.workItems);
+      setLinkState("idle");
+      setGithubState("idle");
+      setGithubMessage(
+        githubMatchCount(payload.workItem) > 0
+          ? `Delivery evidence refreshed for ${key}`
+          : `No GitHub delivery evidence found for ${key}`,
+      );
+      return true;
+    } catch (error) {
+      setLinkState("failed");
+      setGithubState("failed");
+      setGithubMessage(error.message);
+      return false;
+    }
+  }
+
   async function linkSelectedGithub() {
     setLinkState("linking");
     setGithubState("syncing");
@@ -1580,9 +1614,11 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
               onLinkGithub={linkSelectedGithub}
               onCreateGithubIssue={createSelectedGithubIssue}
               onDuplicate={duplicateSelected}
+              onRefreshEvidence={() => refreshReviewEvidence(selectedItem.key)}
               claimState={claimState}
               linkState={linkState}
               issueState={issueState}
+              githubState={githubState}
             />
           </section>
 
@@ -1767,7 +1803,13 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
         ) : null}
 
         {activeNav === "review" ? (
-          <ReviewQueue items={reviewItems} onUpdatePacket={updatePacket} onOpenPacket={openPacket} />
+          <ReviewQueue
+            items={reviewItems}
+            onUpdatePacket={updatePacket}
+            onOpenPacket={openPacket}
+            onRefreshEvidence={refreshReviewEvidence}
+            githubState={githubState}
+          />
         ) : null}
 
         {activeNav === "repos" ? (
@@ -1949,7 +1991,7 @@ function MiniRepoHealth({ rows }) {
   );
 }
 
-function ReviewQueue({ items, onUpdatePacket, onOpenPacket }) {
+function ReviewQueue({ items, onUpdatePacket, onOpenPacket, onRefreshEvidence, githubState }) {
   if (items.length === 0) {
     return (
       <section className="overview-panel review-empty" aria-label="Review queue">
@@ -1968,14 +2010,21 @@ function ReviewQueue({ items, onUpdatePacket, onOpenPacket }) {
       </div>
       <div className="review-grid">
         {items.map((item) => (
-          <ReviewCard key={item.key} item={item} onUpdatePacket={onUpdatePacket} onOpenPacket={onOpenPacket} />
+          <ReviewCard
+            key={item.key}
+            item={item}
+            onUpdatePacket={onUpdatePacket}
+            onOpenPacket={onOpenPacket}
+            onRefreshEvidence={onRefreshEvidence}
+            githubState={githubState}
+          />
         ))}
       </div>
     </section>
   );
 }
 
-function ReviewCard({ item, onUpdatePacket, onOpenPacket }) {
+function ReviewCard({ item, onUpdatePacket, onOpenPacket, onRefreshEvidence, githubState }) {
   const update = item.lastAgentUpdate || {};
   const branch = update.githubBranch || item.githubBranch;
   const prUrl = update.githubPrUrl || item.githubPrUrl;
@@ -2017,11 +2066,15 @@ function ReviewCard({ item, onUpdatePacket, onOpenPacket }) {
         </div>
       </div>
 
+      <ReviewCompletionGate
+        item={item}
+        onComplete={(updates) => onUpdatePacket(item.key, updates)}
+        onInspect={() => onOpenPacket(item.key)}
+        onRefresh={() => onRefreshEvidence(item.key)}
+        refreshing={githubState === "syncing"}
+      />
+
       <div className="review-foot">
-        <button type="button" className="button primary" onClick={() => onUpdatePacket(item.key, { status: "done" })}>
-          <Icon name="check" />
-          Mark done
-        </button>
         <button
           type="button"
           className="button secondary"
@@ -2041,6 +2094,123 @@ function ReviewCard({ item, onUpdatePacket, onOpenPacket }) {
         </button>
       </div>
     </article>
+  );
+}
+
+function ReviewCompletionGate({ item, onComplete, onInspect, onRefresh, refreshing = false }) {
+  const [showOverride, setShowOverride] = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
+  const [completionState, setCompletionState] = useState("idle");
+  const evidence = reviewCompletionEvidence(item);
+  const needsPacketRepair = evidence.missing.some((check) => check.repair === "packet");
+  const needsGithubRefresh = evidence.missing.some((check) => check.repair === "github");
+  const overrideReady = overrideReason.trim().length >= MIN_COMPLETION_OVERRIDE_REASON_LENGTH;
+
+  async function complete(updates) {
+    setCompletionState("saving");
+    const saved = await onComplete(updates);
+    setCompletionState(saved ? "saved" : "failed");
+
+    if (saved) {
+      setShowOverride(false);
+      setOverrideReason("");
+    }
+  }
+
+  return (
+    <section
+      className={`review-evidence ${evidence.canComplete ? "is-ready" : "is-blocked"}`}
+      aria-label={`Delivery evidence for ${item.key}`}
+    >
+      <div className="review-evidence-head">
+        <div>
+          <span className="section-kicker">Delivery gate</span>
+          <strong>{evidence.canComplete ? "Evidence complete" : `${evidence.missing.length} prerequisite${evidence.missing.length === 1 ? "" : "s"} missing`}</strong>
+        </div>
+        <span className={`review-evidence-state ${evidence.canComplete ? "is-ready" : "is-blocked"}`}>
+          {evidence.canComplete ? "Ready to complete" : "Completion blocked"}
+        </span>
+      </div>
+
+      <ul className="review-evidence-list">
+        {evidence.checks.map((check) => (
+          <li key={check.id} className={check.satisfied ? "is-satisfied" : "is-missing"}>
+            <span aria-hidden="true">{check.satisfied ? "✓" : "!"}</span>
+            <div>
+              <strong>{check.label}</strong>
+              <small>
+                {check.satisfied
+                  ? check.id === "merged_pull_request" && evidence.mergedAt
+                    ? `Merged ${formatDateTime(evidence.mergedAt)}`
+                    : "Recorded"
+                  : check.missing}
+              </small>
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      {!evidence.canComplete ? (
+        <div className="review-repair-actions">
+          {needsPacketRepair && onInspect ? (
+            <button type="button" className="button secondary" onClick={onInspect}>
+              Open packet
+            </button>
+          ) : null}
+          {needsGithubRefresh && onRefresh ? (
+            <button type="button" className="button secondary" onClick={onRefresh} disabled={refreshing}>
+              {refreshing ? "Refreshing evidence" : "Refresh GitHub evidence"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="review-completion-actions">
+        <button
+          type="button"
+          className="button primary"
+          onClick={() => complete({ status: "done" })}
+          disabled={!evidence.canComplete || completionState === "saving"}
+        >
+          <Icon name="check" />
+          {completionState === "saving" ? "Completing" : "Mark done"}
+        </button>
+        {!evidence.canComplete ? (
+          <button type="button" className="button secondary" onClick={() => setShowOverride((current) => !current)}>
+            {showOverride ? "Close override" : "Non-code override"}
+          </button>
+        ) : null}
+      </div>
+
+      {showOverride ? (
+        <div className="review-override-form">
+          <label>
+            <span>Why is delivery evidence not applicable?</span>
+            <textarea
+              aria-label={`Completion override reason for ${item.key}`}
+              value={overrideReason}
+              onChange={(event) => setOverrideReason(event.target.value)}
+              rows="3"
+              placeholder="Explain why this packet can be completed without a merged code delivery."
+            />
+          </label>
+          <div>
+            <small>The reason is recorded in the packet agent timeline.</small>
+            <button
+              type="button"
+              className="button danger"
+              onClick={() => complete({
+                status: "done",
+                completionOverrideReason: overrideReason,
+              })}
+              disabled={!overrideReady || completionState === "saving"}
+            >
+              Complete with override
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -2314,13 +2484,16 @@ function WorkPacketDetail({
   onLinkGithub,
   onCreateGithubIssue,
   onDuplicate,
+  onRefreshEvidence,
   claimState,
   linkState,
   issueState,
+  githubState,
 }) {
   const repo = getRepo(item.repo);
   const activeLease = isLeaseActive(item);
   const matchCount = githubMatchCount(item);
+  const reviewEvidence = reviewCompletionEvidence(item);
   const agentEvents = Array.isArray(item.agentEvents) ? item.agentEvents : [];
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(() => itemToDraft(item));
@@ -2362,7 +2535,7 @@ function WorkPacketDetail({
           <span>Status</span>
           <select value={item.status} onChange={(event) => onUpdate({ status: event.target.value })}>
             {statusOptions.map((status) => (
-              <option key={status.id} value={status.id}>
+              <option key={status.id} value={status.id} disabled={status.id === "done" && item.status !== "done" && !reviewEvidence.canComplete}>
                 {status.label}
               </option>
             ))}
@@ -2552,10 +2725,13 @@ function WorkPacketDetail({
         {item.status === "needs_review" ? (
           <Section title="Review queue">
             <ReviewSummary item={item} update={item.lastAgentUpdate} />
+            <ReviewCompletionGate
+              item={item}
+              onComplete={onUpdate}
+              onRefresh={onRefreshEvidence}
+              refreshing={githubState === "syncing"}
+            />
             <div className="review-actions">
-              <button type="button" className="button secondary" onClick={() => onUpdate({ status: "done" })}>
-                Mark done
-              </button>
               <button type="button" className="button secondary" onClick={() => onUpdate({ status: "ready_for_agent" })}>
                 Needs changes
               </button>

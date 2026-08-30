@@ -9,6 +9,7 @@ import {
 } from "../src/lib/reviewEvidence.mjs";
 import { deriveAgentRunHealth, isLeaseActive, normalizeLeaseMinutes } from "./agentRunHealth.mjs";
 import {
+  githubLinksFromMergedPullRequest,
   normalizedGithubUrl,
   repoMatches,
   uniquePullRequests,
@@ -451,7 +452,8 @@ export async function createWorkItem(payload) {
 }
 
 export async function createWorkItemForPullRequest(payload) {
-  const pullRequestUrl = normalizedGithubUrl(payload?.githubPrUrl);
+  const mergedPullRequest = payload.mergedPullRequest;
+  const pullRequestUrl = normalizedGithubUrl(payload?.githubPrUrl || mergedPullRequest?.url);
 
   if (!pullRequestUrl) {
     throw Object.assign(new Error("A GitHub pull request URL is required"), { statusCode: 400 });
@@ -468,8 +470,28 @@ export async function createWorkItemForPullRequest(payload) {
       };
     }
 
+    const now = new Date().toISOString();
+    const source = payload.githubSource || payload.githubLinks?.source || "github-cache";
+    const githubLinks = payload.githubLinks
+      || (mergedPullRequest?.mergedAt
+        ? githubLinksFromMergedPullRequest(payload.linkRepo || { id: payload.repo }, mergedPullRequest, {
+            source,
+            matchedAt: now,
+          })
+        : null);
+
     const result = await createWorkItemUnlocked({
       ...payload,
+      githubPrUrl: payload.githubPrUrl || mergedPullRequest?.url || "",
+      githubBranch: payload.githubBranch || mergedPullRequest?.branch || "",
+      githubLinks,
+      lastGithubLinkUpdate: payload.lastGithubLinkUpdate || (githubLinks
+        ? {
+            at: now,
+            source,
+            matchCount: countGithubMatches(githubLinks),
+          }
+        : null),
       idempotencyKey: payload.idempotencyKey || `pull-request:${pullRequestUrl}`,
     });
     return { ...result, created: true };
@@ -1001,20 +1023,15 @@ async function linkMergedPullRequestUnlocked(key, {
 
   const now = new Date().toISOString();
   const currentLinks = currentItem.githubLinks || {};
-  const pullRequests = uniquePullRequests([pullRequest, ...(currentLinks.pullRequests || [])]);
-  const githubLinks = {
-    ...currentLinks,
-    repoId: repo.id || repo.name || currentItem.repo,
-    repoSlug: repo.slug || currentLinks.repoSlug || "",
+  const githubLinks = githubLinksFromMergedPullRequest(repo, pullRequest, {
     source,
     matchedAt: now,
-    bestBranch: pullRequest.branch || currentLinks.bestBranch || currentItem.githubBranch || "",
-    bestPrUrl: pullRequestUrl,
-    pullRequests,
-    branches: currentLinks.branches || [],
-    issues: currentLinks.issues || [],
-    workflowRuns: currentLinks.workflowRuns || [],
-  };
+    currentLinks: {
+      ...currentLinks,
+      repoId: currentLinks.repoId || currentItem.repo,
+    },
+    currentBranch: currentItem.githubBranch,
+  });
   const nextItem = {
     ...currentItem,
     githubBranch: pullRequest.branch || currentItem.githubBranch || "",

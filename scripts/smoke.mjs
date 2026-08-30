@@ -333,6 +333,12 @@ try {
   const followUpBody = await followUp.json();
   check("reconciliation follow-up creates a TASK packet", followUp.status === 201 && /^TASK-\d+$/.test(followUpBody.workItem?.key || ""));
   check(
+    "reconciliation follow-up stores cached merge metadata",
+    followUpBody.workItem?.githubLinks?.pullRequests?.[0]?.url === "https://github.com/your-org/marketing-site/pull/88"
+      && Boolean(followUpBody.workItem?.githubLinks?.pullRequests?.[0]?.mergedAt)
+      && Boolean(followUpBody.workItem?.githubLinks?.pullRequests?.[0]?.mergeCommitSha),
+  );
+  check(
     "reconciliation follow-up uses generic copy",
     followUpBody.workItem?.repo === "marketing-site"
       && followUpBody.created === true

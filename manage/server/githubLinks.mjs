@@ -49,6 +49,35 @@ function pullRequestMatchesUrl(pullRequest, url) {
   return Boolean(url) && normalizedGithubUrl(pullRequest?.url) === normalizedGithubUrl(url);
 }
 
+export function githubLinksFromMergedPullRequest(repo, pullRequest, {
+  source = "github-cache",
+  matchedAt = new Date().toISOString(),
+  currentLinks = {},
+  currentBranch = "",
+} = {}) {
+  const pullRequests = uniquePullRequests([pullRequest, ...(currentLinks.pullRequests || [])].filter(Boolean));
+
+  return {
+    ...currentLinks,
+    repoId: repo?.id || repo?.name || currentLinks.repoId || "",
+    repoSlug: repo?.slug || currentLinks.repoSlug || "",
+    source,
+    matchedAt,
+    bestBranch: pullRequest?.branch || currentLinks.bestBranch || currentBranch || "",
+    bestPrUrl: String(pullRequest?.url || currentLinks.bestPrUrl || "").trim(),
+    pullRequests,
+    branches: currentLinks.branches || [],
+    issues: currentLinks.issues || [],
+    workflowRuns: currentLinks.workflowRuns || [],
+  };
+}
+
+function packetBranchMatches(workItem, pullRequest) {
+  const branch = String(pullRequest?.branch || "").trim();
+  return Boolean(branch) && [workItem?.githubBranch, workItem?.suggestedBranch]
+    .some((candidate) => String(candidate || "").trim() === branch);
+}
+
 export function uniquePullRequests(pullRequests = []) {
   const byIdentity = new Map();
 
@@ -285,7 +314,9 @@ export function findGithubMatchesForItem(workItem, githubCache) {
   }
 
   const pullRequests = uniquePullRequests([...(repo.mergedPulls || []), ...(repo.latestPulls || [])]).filter((pullRequest) =>
-    matchesAnyField(pullRequest, ["title", "branch", "url"], variants),
+    matchesAnyField(pullRequest, ["title", "branch", "url"], variants)
+    || workItemLinksPullRequest(workItem, pullRequest.url)
+    || packetBranchMatches(workItem, pullRequest),
   );
   const branches = (repo.branches || []).filter((branch) => containsKey(branch.name, variants));
   const issues = (repo.latestIssues || []).filter((issue) => matchesAnyField(issue, ["title", "url"], variants));

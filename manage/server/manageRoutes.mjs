@@ -482,6 +482,9 @@ async function handleRoute(req, res, baseUrl) {
         deployNotes: "Follow the repository's normal review and deployment path if code changes are required.",
         githubBranch: pullRequest.branch || "",
         githubPrUrl: pullRequest.url,
+        mergedPullRequest: pullRequest,
+        linkRepo: mergedPullRequest.repo,
+        githubSource: githubCache.source || "github-cache",
         idempotencyKey: body.idempotencyKey || `reconciliation-follow-up:${pullRequest.url}`,
       });
       const nextWorkItems = result.created

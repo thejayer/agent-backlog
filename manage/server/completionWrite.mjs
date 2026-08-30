@@ -1,4 +1,9 @@
-import { findGithubMatchesForItem, hasGithubMatches } from "./githubLinks.mjs";
+import {
+  findGithubMatchesForItem,
+  findMergedPullRequest,
+  hasGithubMatches,
+  uniquePullRequests,
+} from "./githubLinks.mjs";
 import { parseGithubPullRequestUrl } from "./githubSync.mjs";
 
 function normalizedGithubUrl(value) {
@@ -59,12 +64,39 @@ export function buildMergedPullRequestMatches({
   };
 }
 
+function matchesWithCachedPullRequest(workItem, githubCache, payload = {}) {
+  const matches = findGithubMatchesForItem(workItem, githubCache);
+
+  if (completionPullRequest(workItem, payload, matches)) {
+    return matches;
+  }
+
+  const cached = findMergedPullRequest(
+    githubCache,
+    payload.githubPrUrl || workItem.lastAgentUpdate?.githubPrUrl || workItem.githubPrUrl,
+  );
+
+  if (!cached?.pullRequest) {
+    return matches;
+  }
+
+  return {
+    ...matches,
+    repoId: cached.repo.id || cached.repo.name || matches.repoId,
+    repoSlug: cached.repo.slug || matches.repoSlug,
+    source: githubCache?.source || matches.source || "github-cache",
+    bestPrUrl: cached.pullRequest.url || matches.bestPrUrl,
+    bestBranch: cached.pullRequest.branch || matches.bestBranch,
+    pullRequests: uniquePullRequests([cached.pullRequest, ...(matches.pullRequests || [])]),
+  };
+}
+
 export async function resolveCompletionGithubEvidence(workItem, payload = {}, {
   githubCache,
   localGithubCache = false,
   fetchEvidence,
 } = {}) {
-  const matches = findGithubMatchesForItem(workItem, githubCache);
+  const matches = matchesWithCachedPullRequest(workItem, githubCache, payload);
   let pullRequest = completionPullRequest(workItem, payload, matches);
   let completionGithubMatches = pullRequest && hasGithubMatches(matches) ? matches : null;
 

@@ -73,6 +73,47 @@ describe("findGithubMatchesForItem", () => {
     expect(matches.pullRequests).toEqual([]);
     expect(matches.bestPrUrl).toBe("");
   });
+
+  it("includes a reconciled merge linked by packet branch instead of TASK key", () => {
+    const prUrl = "https://github.com/your-org/web-app/pull/88";
+    const matches = findGithubMatchesForItem(
+      {
+        key: "TASK-201",
+        repo: "web-app",
+        suggestedBranch: "docs/homepage-hero",
+        githubPrUrl: prUrl,
+      },
+      {
+        source: "mock",
+        repos: [
+          {
+            id: "web-app",
+            slug: "your-org/web-app",
+            mergedPulls: [
+              {
+                number: 88,
+                title: "Refresh the public homepage hero",
+                branch: "docs/homepage-hero",
+                url: prUrl,
+                mergedAt: "2026-07-21T09:00:00.000Z",
+                mergeCommitSha: "def456",
+                deliveryEvidence: { tests: { success: true, results: ["mock"] } },
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(matches.pullRequests).toHaveLength(1);
+    expect(matches.pullRequests[0]).toMatchObject({
+      url: prUrl,
+      mergedAt: "2026-07-21T09:00:00.000Z",
+      mergeCommitSha: "def456",
+    });
+    expect(matches.bestPrUrl).toBe(prUrl);
+    expect(JSON.stringify(matches)).not.toMatch(CSC_LEAKAGE);
+  });
 });
 
 describe("reconcileMergedPullRequests", () => {

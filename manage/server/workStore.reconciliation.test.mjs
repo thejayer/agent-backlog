@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { workItems as seedWorkItems } from "../src/data/workItems.mjs";
+import { reviewCompletionEvidence } from "../src/lib/reviewEvidence.mjs";
 import {
   createWorkItemForPullRequest,
   linkMergedPullRequest,
@@ -107,5 +108,52 @@ describe("merged PR reconciliation store", () => {
     expect(matchingItems).toHaveLength(1);
     expect(await listWorkItems()).toHaveLength(seedWorkItems.length + 1);
     expect(JSON.stringify(results)).not.toMatch(CSC_LEAKAGE);
+  });
+
+  it("createWorkItemForPullRequest persists cached merge metadata for Review evidence", async () => {
+    freezeTime();
+    const pullRequest = {
+      number: 88,
+      title: "Refresh the public homepage hero",
+      branch: "docs/homepage-hero",
+      url: "https://github.com/your-org/marketing-site/pull/88",
+      mergedAt: "2026-06-12T11:55:00.000Z",
+      mergeCommitSha: "def456",
+    };
+
+    const { workItem, created } = await createWorkItemForPullRequest({
+      title: "Follow up marketing-site PR #88: Refresh the public homepage hero",
+      repo: "marketing-site",
+      githubPrUrl: pullRequest.url,
+      githubBranch: pullRequest.branch,
+      mergedPullRequest: pullRequest,
+      linkRepo: { id: "marketing-site", name: "marketing-site", slug: "your-org/marketing-site" },
+      githubSource: "mock",
+    });
+
+    expect(created).toBe(true);
+    expect(workItem.key).toMatch(/^TASK-\d+$/);
+    expect(workItem.githubLinks.pullRequests[0]).toMatchObject({
+      url: pullRequest.url,
+      mergedAt: pullRequest.mergedAt,
+      mergeCommitSha: pullRequest.mergeCommitSha,
+    });
+    expect(workItem.lastGithubLinkUpdate).toEqual({
+      at: T0.toISOString(),
+      source: "mock",
+      matchCount: 1,
+    });
+
+    const evidence = reviewCompletionEvidence({
+      ...workItem,
+      lastAgentUpdate: {
+        note: "Follow-up reviewed.",
+        githubPrUrl: pullRequest.url,
+        testsRun: ["npm test - passed"],
+        filesChanged: ["marketing-site/src/hero.js"],
+      },
+    });
+    expect(evidence.checks.find((check) => check.id === "merged_pull_request")?.satisfied).toBe(true);
+    expect(JSON.stringify(workItem)).not.toMatch(CSC_LEAKAGE);
   });
 });

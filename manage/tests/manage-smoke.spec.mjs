@@ -93,6 +93,7 @@ test("Today dashboard claims the next packet and shows activity", async ({ page,
   await page.goto("/");
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Today" }).click();
 
+  await expect(page.getByLabel("Today attention inbox")).toBeVisible();
   await expect(page.getByLabel("Today overview")).toContainText("TASK-101");
   await expect(page.getByRole("button", { name: "Claim for agent" })).toBeVisible();
   await expect(page.getByLabel("Recent agent activity")).toContainText("No agent events yet");
@@ -108,6 +109,193 @@ test("Today dashboard claims the next packet and shows activity", async ({ page,
   const claimed = payload.workItems.find((item) => item.key === "TASK-101");
   expect(claimed.status).toBe("claimed");
   expect(claimed.agentEvents.at(-1)).toMatchObject({ type: "claimed", agent: "Codex" });
+});
+
+test("Today attention inbox groups exceptions, deep-links, and has no CSC leakage", async ({ page, request }) => {
+  const failedClaim = await request.post("/api/agent/tasks/TASK-101/claim", {
+    data: { agent: "Codex", leaseMinutes: 45 },
+  });
+  const failedClaimPayload = await failedClaim.json();
+  await request.post("/api/agent/tasks/TASK-101/status", {
+    data: {
+      status: "blocked",
+      agent: "Codex",
+      agentRunId: failedClaimPayload.workItem.agentRunId,
+      note: "The agent run failed during verification.",
+      blockers: ["Manage checks failed"],
+    },
+  });
+
+  await request.patch("/api/work-items/TASK-102", {
+    data: {
+      status: "in_progress",
+      agent: "Claude Code",
+      claimedBy: "",
+      claimedAt: "",
+      agentRunId: "",
+      leaseExpiresAt: "",
+    },
+  });
+
+  await request.patch("/api/work-items/TASK-103", {
+    data: {
+      status: "in_progress",
+      agent: "Codex",
+      claimedBy: "Codex",
+      claimedAt: new Date(Date.now() - 61 * 60_000).toISOString(),
+      agentRunId: "TASK-103-today-stale",
+      leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+      githubBranch: "codex/task-103-today-stale",
+    },
+  });
+
+  await request.patch("/api/work-items/TASK-104", {
+    data: { status: "needs_review", agent: "Codex", claimedBy: "Codex" },
+  });
+  await request.post("/api/github/sync", { data: { mock: true } });
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Today" }).click();
+
+  const inbox = page.getByLabel("Today attention inbox");
+  await expect(inbox.getByRole("heading", { name: "Attention inbox" })).toBeVisible();
+  const attentionCards = inbox.locator(".attention-item");
+  await expect(attentionCards.first()).toContainText("Failed run");
+  await expect(attentionCards.first()).toContainText("TASK-101");
+  await expect(inbox).toContainText("Stale run");
+  await expect(inbox).toContainText("Review handoff is incomplete");
+  await expect(inbox).toContainText("Merged PR is not linked");
+  await expect(inbox.getByText(/old$/).first()).toBeVisible();
+  await expect(inbox).not.toContainText("Commerce Street");
+  await expect(inbox).not.toContainText("CSC-");
+  await expect(inbox).not.toContainText("Harbor");
+  await expect(inbox).not.toContainText("RegVault");
+
+  await inbox.getByRole("button", { name: /Agent/ }).click();
+  await expect(inbox.locator(".attention-item")).toHaveCount(3);
+  const staleCard = inbox.locator(".attention-item").filter({ hasText: "TASK-103" });
+  await staleCard.getByRole("button", { name: "TASK-103" }).click();
+  await expect(page.getByRole("heading", { name: "Agent activity" })).toBeVisible();
+  await expect(page.getByLabel("Agent activity")).toContainText("TASK-103");
+
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Today" }).click();
+  await inbox.getByRole("button", { name: /Agent/ }).click();
+  await staleCard.getByRole("button", { name: "Reclaim" }).click();
+  await expect(staleCard).toHaveCount(0);
+  await expect(inbox).toContainText("Reclaimed TASK-103");
+
+  await inbox.getByRole("button", { name: /GitHub/ }).click();
+  const githubCard = inbox.locator(".attention-item").filter({ hasText: "#101" });
+  await expect(githubCard).toBeVisible();
+  await githubCard.getByRole("button", { name: "Link TASK-101" }).click();
+  await expect(inbox).toContainText("Linked TASK-101 to web-app #101");
+
+  await inbox.getByRole("button", { name: /Handoff/ }).click();
+  const handoffCard = inbox.locator(".attention-item").filter({ hasText: "TASK-104" });
+  await handoffCard.getByRole("button", { name: "Complete handoff" }).click();
+  await expect(page.getByRole("heading", { name: "Review queue", level: 1 })).toBeVisible();
+  await expect(page.getByLabel("Review queue")).toContainText("TASK-104");
+});
+
+test("Today attention inbox empty state stays generic", async ({ page, request }) => {
+  await request.patch("/api/work-items/TASK-103", {
+    data: {
+      status: "ready_for_agent",
+      agent: "",
+      claimedBy: "",
+      claimedAt: "",
+      agentRunId: "",
+      leaseExpiresAt: "",
+      githubBranch: "",
+    },
+  });
+  await request.patch("/api/work-items/TASK-106", { data: { status: "draft" } });
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Today" }).click();
+
+  const inbox = page.getByLabel("Today attention inbox");
+  await inbox.getByRole("button", { name: /Agent/ }).click();
+  await expect(inbox).toContainText("No agent exceptions");
+  await inbox.getByRole("button", { name: /Review/ }).click();
+  await expect(inbox).toContainText("No review exceptions");
+  await inbox.getByRole("button", { name: /Handoff/ }).click();
+  await expect(inbox).toContainText("No handoff exceptions");
+  await inbox.getByRole("button", { name: /All/ }).click();
+  const leftoverGithub = await inbox.locator(".attention-item").count();
+  if (leftoverGithub === 0) {
+    await expect(inbox).toContainText("The attention queue is clear");
+    await expect(inbox).toContainText("No packets need operator intervention right now.");
+  }
+  await expect(inbox).not.toContainText("Commerce Street");
+  await expect(inbox).not.toContainText("CSC-");
+});
+
+test("Today attention inbox exposes a loading state", async ({ page }) => {
+  let releaseWorkItems;
+  const waitForRelease = new Promise((resolve) => {
+    releaseWorkItems = resolve;
+  });
+
+  await page.route("**/api/work-items", async (route) => {
+    await waitForRelease;
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Today" }).click();
+  await expect(page.getByLabel("Loading attention inbox")).toBeVisible();
+  releaseWorkItems();
+  await expect(page.getByLabel("Loading attention inbox")).toHaveCount(0);
+});
+
+test("Today keeps action failures separate from reconciliation sync health", async ({ page, request }) => {
+  await request.post("/api/github/sync", { data: { mock: true } });
+  await page.route("**/api/github/reconciliation", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Unable to link this merged pull request" }),
+      });
+      return;
+    }
+
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Today" }).click();
+  const inbox = page.getByLabel("Today attention inbox");
+  await inbox.getByRole("button", { name: /GitHub/ }).click();
+  await inbox.getByRole("button", { name: "Link TASK-101" }).click();
+
+  await expect(inbox).toContainText("Unable to link this merged pull request");
+  await expect(inbox.locator(".attention-action-message.is-failed")).toBeVisible();
+  await expect(inbox).not.toContainText("GitHub reconciliation is degraded");
+});
+
+test("Today shows degraded reconciliation without hiding other inbox signals", async ({ page }) => {
+  await page.route("**/api/github/reconciliation", (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "Reconciliation temporarily unavailable" }),
+      });
+    }
+
+    return route.continue();
+  });
+
+  await page.goto("/");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Today" }).click();
+
+  const inbox = page.getByLabel("Today attention inbox");
+  await expect(inbox).toContainText("GitHub reconciliation is degraded");
+  await expect(inbox).toContainText("Agent, review, and handoff signals remain available");
+  await expect(inbox).toContainText("Review handoff is incomplete");
+  await expect(inbox).not.toContainText("Commerce Street");
 });
 
 test("Agents view shows active claims, leases, roster, and recent activity", async ({ page, request }) => {
@@ -499,6 +687,7 @@ test("routes shell navigation to focused workspaces", async ({ page }) => {
 
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Today" }).click();
   await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+  await expect(page.getByLabel("Today attention inbox")).toContainText("Attention inbox");
   await expect(page.getByLabel("Today overview")).toContainText("Next ready packet");
 
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Repos" }).click();

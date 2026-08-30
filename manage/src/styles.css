@@ -39,6 +39,7 @@
   --manage-red: var(--m-red);
   --manage-purple: var(--m-purple);
   --manage-yellow: #b7791f;
+  --manage-amber: var(--manage-yellow);
   --manage-brand: var(--m-brand);
   --manage-brand-ink: var(--brand-ink);
   --manage-primary-hover: var(--primary-hover);
@@ -676,6 +677,330 @@ textarea:focus-visible {
 
 .metric-info {
   --metric-color: var(--manage-blue);
+}
+
+.attention-inbox {
+  display: grid;
+  gap: var(--manage-gap);
+  margin-bottom: var(--manage-gap);
+  padding: var(--manage-panel-padding);
+  border: 1px solid var(--manage-border);
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 94% 0%, color-mix(in srgb, var(--manage-rust) 11%, transparent), transparent 34%),
+    var(--manage-surface-glass);
+  box-shadow: var(--manage-shadow);
+}
+
+.attention-inbox-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--manage-gap);
+}
+
+.attention-inbox-head > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.attention-inbox-head h2 {
+  margin: 0;
+  color: var(--manage-ink);
+  font-family: var(--manage-font-display);
+  font-size: clamp(22px, 2.5vw, 28px);
+  font-weight: 600;
+}
+
+.attention-inbox-head p,
+.attention-empty p {
+  margin: 0;
+  color: var(--manage-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.attention-total {
+  display: grid;
+  min-width: 96px;
+  padding: 11px 13px;
+  border: 1px solid var(--manage-border);
+  border-radius: 8px;
+  background: var(--manage-surface-soft);
+  text-align: right;
+}
+
+.attention-total strong {
+  color: var(--manage-green);
+  font-family: var(--manage-font-display);
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.attention-total.has-attention strong {
+  color: var(--manage-rust);
+}
+
+.attention-total span {
+  color: var(--manage-muted);
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.attention-filters {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.attention-filters button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--manage-border);
+  border-radius: 999px;
+  background: var(--manage-surface-soft);
+  color: var(--manage-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.attention-filters button:hover,
+.attention-filters button.is-active {
+  border-color: var(--manage-accent-line);
+  background: var(--manage-accent-soft);
+  color: var(--manage-ink);
+}
+
+.attention-filters button strong {
+  display: grid;
+  place-items: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--manage-ink) 8%, transparent);
+  color: inherit;
+  font-family: var(--manage-font-mono);
+  font-size: 10px;
+}
+
+.attention-sync-state,
+.attention-action-message {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--manage-border);
+  border-radius: 8px;
+  background: var(--manage-surface-soft);
+  color: var(--manage-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.attention-sync-state svg {
+  flex: 0 0 auto;
+  stroke: currentcolor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.attention-sync-state.is-degraded {
+  border-color: color-mix(in srgb, var(--manage-amber) 35%, var(--manage-border));
+  background: color-mix(in srgb, var(--manage-amber) 9%, var(--manage-surface));
+  color: var(--manage-amber);
+}
+
+.attention-sync-state.is-degraded span {
+  color: var(--manage-muted);
+}
+
+.attention-sync-state.is-degraded strong {
+  color: var(--manage-ink);
+}
+
+.attention-action-message.is-failed {
+  border-color: color-mix(in srgb, var(--manage-red) 38%, var(--manage-border));
+  background: color-mix(in srgb, var(--manage-red) 9%, var(--manage-surface));
+  color: var(--manage-red);
+}
+
+.attention-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid var(--manage-border-strong);
+  border-top-color: var(--manage-blue);
+  border-radius: 999px;
+  animation: attention-spin 0.8s linear infinite;
+}
+
+@keyframes attention-spin {
+  to { transform: rotate(360deg); }
+}
+
+.attention-loading,
+.attention-list {
+  display: grid;
+  gap: 8px;
+}
+
+.attention-loading span {
+  display: block;
+  height: 102px;
+  border: 1px solid var(--manage-border);
+  border-radius: 8px;
+  background: linear-gradient(100deg, var(--manage-surface-soft) 20%, var(--manage-hover) 45%, var(--manage-surface-soft) 70%);
+  background-size: 220% 100%;
+  animation: attention-shimmer 1.3s ease-in-out infinite;
+}
+
+@keyframes attention-shimmer {
+  to { background-position: -220% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .attention-spinner,
+  .attention-loading span {
+    animation: none;
+  }
+}
+
+.attention-empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 96px;
+  padding: 18px;
+  border: 1px dashed var(--manage-border-strong);
+  border-radius: 8px;
+  background: var(--manage-surface-soft);
+}
+
+.attention-empty > div {
+  display: grid;
+  gap: 4px;
+}
+
+.attention-empty strong {
+  color: var(--manage-ink);
+  font-size: 14px;
+}
+
+.attention-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--manage-green) 14%, transparent);
+  color: var(--manage-green);
+}
+
+.attention-empty-icon svg {
+  stroke: currentcolor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.attention-item {
+  display: grid;
+  grid-template-columns: 5px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  min-width: 0;
+  padding: 14px 14px 14px 10px;
+  border: 1px solid var(--manage-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--manage-surface) 90%, transparent);
+}
+
+.attention-severity {
+  width: 5px;
+  height: 100%;
+  min-height: 62px;
+  border-radius: 999px;
+  background: var(--manage-blue);
+}
+
+.attention-critical .attention-severity { background: var(--manage-red); box-shadow: 0 0 16px color-mix(in srgb, var(--manage-red) 48%, transparent); }
+.attention-high .attention-severity { background: var(--manage-rust); }
+.attention-warning .attention-severity { background: var(--manage-amber); }
+
+.attention-item-body {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.attention-item-topline,
+.attention-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--manage-faint);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.attention-category {
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: var(--manage-surface-soft);
+  color: var(--manage-blue);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.category-handoff { color: var(--manage-rust); }
+.category-github { color: var(--manage-green); }
+.category-review { color: var(--manage-amber); }
+
+.attention-item h3 {
+  margin: 0;
+  color: var(--manage-ink);
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.attention-item p {
+  margin: 0;
+  color: var(--manage-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.attention-item-meta a,
+.attention-packet-link {
+  overflow: hidden;
+  color: var(--manage-blue);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attention-packet-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-family: var(--manage-font-mono);
+  cursor: pointer;
+}
+
+.attention-action {
+  min-width: 118px;
+  justify-content: center;
 }
 
 .today-hero {
@@ -3036,6 +3361,20 @@ code {
   .panel-header,
   .system-status {
     display: grid;
+  }
+
+  .attention-inbox-head,
+  .attention-item {
+    display: grid;
+  }
+
+  .attention-total {
+    justify-self: start;
+    text-align: left;
+  }
+
+  .attention-action {
+    justify-self: start;
   }
 
   .metric-strip,

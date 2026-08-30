@@ -22,6 +22,12 @@ import {
   reviewCompletionEvidence,
 } from "./lib/reviewEvidence.mjs";
 import {
+  attentionCount,
+  attentionDestination,
+  attentionInboxFilters,
+  buildAttentionInbox,
+} from "./lib/attentionInbox.mjs";
+import {
   claimWorkItem as claimWorkItemRequest,
   createBackup as createBackupRequest,
   createGithubIssue as createGithubIssueRequest,
@@ -57,7 +63,7 @@ const viewCopy = {
   today: {
     eyebrow: "Console",
     title: "Today",
-    description: "Start with the next packet, current backlog pressure, and active agent work.",
+    description: "Packets and exceptions that need a human now, ranked for action.",
   },
   backlog: {
     eyebrow: "Workspace",
@@ -545,6 +551,15 @@ function githubMatchCount(item) {
   );
 }
 
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
 function manageOrigin() {
   return typeof window === "undefined" ? "http://127.0.0.1:5186" : window.location.origin;
 }
@@ -743,6 +758,8 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
   const [reconciliationMessage, setReconciliationMessage] = useState("Reconciliation ready");
   const [reconciliationAction, setReconciliationAction] = useState("");
   const [claimState, setClaimState] = useState("idle");
+  const [agentRecoveryAction, setAgentRecoveryAction] = useState("");
+  const [agentRecoveryMessage, setAgentRecoveryMessage] = useState("");
   const [linkState, setLinkState] = useState("idle");
   const [issueState, setIssueState] = useState("idle");
   const [issueImportState, setIssueImportState] = useState("idle");
@@ -1045,14 +1062,19 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     }).length;
   }, [githubCache]);
 
+  const attentionItems = useMemo(
+    () => buildAttentionInbox({ workItems: items, reconciliation }),
+    [items, reconciliation],
+  );
   const navCounts = useMemo(
     () => ({
+      today: attentionItems.length || null,
       backlog: stats.totalCount,
       repos: repoAlertCount || null,
       agents: activeClaims.length || null,
       review: stats.reviewCount || null,
     }),
-    [activeClaims.length, repoAlertCount, stats.reviewCount, stats.totalCount],
+    [activeClaims.length, attentionItems.length, repoAlertCount, stats.reviewCount, stats.totalCount],
   );
   const recentAgentActivity = useMemo(() => buildActivityFeed(items, 5), [items]);
   const miniRepoHealth = useMemo(() => buildMiniRepoHealth(githubCache), [githubCache]);
@@ -1088,6 +1110,64 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
 
     setSelectedKey(key);
     setActiveNav("backlog");
+  }
+
+  function openReviewPacket(key) {
+    if (key) {
+      setSelectedKey(key);
+    }
+
+    setStatusFilter("needs_review");
+    setRepoFilter("all");
+    setLabelFilter("all");
+    setActiveNav("review");
+  }
+
+  function openAttentionDestination(attention) {
+    const destination = attentionDestination(attention);
+
+    if (destination === "review") {
+      openReviewPacket(attention.packetKey);
+      return;
+    }
+
+    if (destination === "agents") {
+      selectNav("agents");
+      return;
+    }
+
+    if (destination === "repos") {
+      selectNav("repos");
+      return;
+    }
+
+    openPacket(attention.packetKey);
+  }
+
+  async function actOnAttention(attention) {
+    const workItem = items.find((item) => item.key === attention.packetKey);
+
+    if (attention.action.kind === "agent_recovery" && workItem) {
+      await recoverRun(workItem, attention.action.recovery);
+      return;
+    }
+
+    if (attention.action.kind === "link_merge") {
+      await reconcileMergedPull("link", attention.pullRequest, attention.packetKey);
+      return;
+    }
+
+    if (attention.action.kind === "create_follow_up") {
+      await reconcileMergedPull("follow_up", attention.pullRequest);
+      return;
+    }
+
+    if (attention.action.kind === "open_review" || attention.primaryCategory === "handoff" || attention.primaryCategory === "review") {
+      openReviewPacket(attention.packetKey);
+      return;
+    }
+
+    openAttentionDestination(attention);
   }
 
   function replaceWorkItem(workItem) {
@@ -1252,6 +1332,10 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
       return;
     }
 
+    const actionKey = `${item.key}:${action}`;
+    const pastTense = action === "extend" ? "Extended" : `${action[0].toUpperCase()}${action.slice(1)}d`;
+    setAgentRecoveryAction(actionKey);
+    setAgentRecoveryMessage(`${action[0].toUpperCase()}${action.slice(1)} ${item.key}`);
     setSyncState("saving");
     setSyncMessage(`${action[0].toUpperCase()}${action.slice(1)} ${item.key}`);
 
@@ -1268,10 +1352,20 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
         replaceWorkItem(payload.workItem);
       }
       setSyncState("synced");
-      setSyncMessage(`${action[0].toUpperCase()}${action.slice(1)}d ${payload.workItem.key}`);
+      setSyncMessage(`${pastTense} ${payload.workItem.key}`);
+      setAgentRecoveryMessage(
+        action === "extend"
+          ? `Extended ${item.key}`
+          : action === "reclaim"
+            ? `Reclaimed ${item.key}`
+            : `Released ${item.key} to the ready queue`,
+      );
     } catch (error) {
       setSyncState("failed");
       setSyncMessage(error.message);
+      setAgentRecoveryMessage(error.message);
+    } finally {
+      setAgentRecoveryAction("");
     }
   }
 
@@ -1662,6 +1756,16 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
             nextItem={nextItem}
             activity={recentAgentActivity}
             repoHealthRows={miniRepoHealth}
+            attentionItems={attentionItems}
+            loadState={loadState}
+            reconciliationSyncState={reconciliationSyncState}
+            reconciliationActionState={reconciliationActionState}
+            reconciliationMessage={reconciliationMessage}
+            reconciliationAction={reconciliationAction}
+            agentRecoveryAction={agentRecoveryAction}
+            agentRecoveryMessage={agentRecoveryMessage}
+            onAttentionAction={actOnAttention}
+            onOpenAttention={openAttentionDestination}
             onOpenPacket={openPacket}
             onClaimPacket={claimPacket}
             claimState={claimState}
@@ -2033,9 +2137,203 @@ function Metric({ label, value, tone }) {
   );
 }
 
-function TodayOverview({ stats, nextItem, activity, repoHealthRows, onOpenPacket, onClaimPacket, claimState, onNavigate }) {
+function formatAttentionAge(minutes) {
+  if (!Number.isFinite(minutes)) {
+    return "Age unavailable";
+  }
+
+  if (minutes < 1) {
+    return "Just now";
+  }
+
+  if (minutes < 60) {
+    return `${Math.floor(minutes)}m old`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h old`;
+  }
+
+  return `${Math.floor(hours / 24)}d old`;
+}
+
+function attentionActionKey(item) {
+  if (item.action.kind === "agent_recovery") {
+    return `${item.packetKey}:${item.action.recovery}`;
+  }
+
+  if (item.action.kind === "link_merge") {
+    return `link:${item.pullRequest.id}`;
+  }
+
+  if (item.action.kind === "create_follow_up") {
+    return `follow_up:${item.pullRequest.id}`;
+  }
+
+  return "";
+}
+
+function TodayAttentionInbox({
+  items,
+  loadState,
+  reconciliationSyncState,
+  reconciliationActionState,
+  reconciliationMessage,
+  reconciliationAction,
+  agentRecoveryAction,
+  agentRecoveryMessage,
+  onAction,
+  onOpenItem,
+}) {
+  const [activeFilter, setActiveFilter] = useState("all");
+  const filteredItems = activeFilter === "all"
+    ? items
+    : items.filter((item) => item.categories.includes(activeFilter));
+  const showReconciliationOutcome = ["saving", "failed"].includes(reconciliationActionState)
+    || /^(Linked|Created)\b|was already reconciled$/.test(reconciliationMessage);
+
+  return (
+    <section className="attention-inbox" aria-label="Today attention inbox">
+      <div className="attention-inbox-head">
+        <div>
+          <span className="tn-eyebrow">Operator queue</span>
+          <h2>Attention inbox</h2>
+          <p>Exceptions most likely to stall delivery, ranked by impact and age.</p>
+        </div>
+        <div className={`attention-total ${items.length > 0 ? "has-attention" : ""}`}>
+          <strong>{items.length}</strong>
+          <span>{items.length === 1 ? "needs" : "need"} attention</span>
+        </div>
+      </div>
+
+      <div className="attention-filters" aria-label="Attention inbox filters">
+        {attentionInboxFilters.map((filter) => (
+          <button
+            type="button"
+            key={filter.id}
+            className={activeFilter === filter.id ? "is-active" : ""}
+            aria-pressed={activeFilter === filter.id}
+            onClick={() => setActiveFilter(filter.id)}
+          >
+            <span>{filter.label}</span>
+            <strong>{attentionCount(items, filter.id)}</strong>
+          </button>
+        ))}
+      </div>
+
+      {reconciliationSyncState === "failed" ? (
+        <div className="attention-sync-state is-degraded" role="status">
+          <Icon name="warning" />
+          <span><strong>GitHub reconciliation is degraded.</strong> Agent, review, and handoff signals remain available. {reconciliationMessage}</span>
+        </div>
+      ) : reconciliationSyncState === "loading" ? (
+        <div className="attention-sync-state" role="status">
+          <span className="attention-spinner" aria-hidden="true" />
+          <span>Checking GitHub reconciliation for unlinked merged pull requests.</span>
+        </div>
+      ) : null}
+
+      {agentRecoveryMessage ? <div className="attention-action-message" role="status">{agentRecoveryMessage}</div> : null}
+      {showReconciliationOutcome ? (
+        <div className={`attention-action-message ${reconciliationActionState === "failed" ? "is-failed" : ""}`} role="status">
+          {reconciliationMessage}
+        </div>
+      ) : null}
+
+      {loadState === "loading" ? (
+        <div className="attention-loading" aria-label="Loading attention inbox">
+          {[0, 1, 2].map((item) => <span key={item} />)}
+        </div>
+      ) : filteredItems.length === 0 ? (
+        <div className="attention-empty">
+          <span className="attention-empty-icon"><Icon name="check" /></span>
+          <div>
+            <strong>{activeFilter === "all" ? "The attention queue is clear" : `No ${activeFilter} exceptions`}</strong>
+            <p>{activeFilter === "all" ? "No packets need operator intervention right now." : "Try another filter or return to the full priority queue."}</p>
+          </div>
+        </div>
+      ) : (
+        <div className="attention-list">
+          {filteredItems.map((item) => {
+            const actionKey = attentionActionKey(item);
+            const pending = actionKey && (actionKey === agentRecoveryAction || actionKey === reconciliationAction);
+            const pullRequestUrl = safeExternalUrl(item.pullRequest?.url);
+
+            return (
+              <article className={`attention-item attention-${item.severity}`} key={item.id}>
+                <span className="attention-severity" aria-label={`${item.severity} priority`} />
+                <div className="attention-item-body">
+                  <div className="attention-item-topline">
+                    <span className={`attention-category category-${item.primaryCategory}`}>{item.primaryCategory}</span>
+                    <span>{formatAttentionAge(item.ageMinutes)}</span>
+                  </div>
+                  <h3>{item.title}</h3>
+                  <p>{item.reason}</p>
+                  <div className="attention-item-meta">
+                    {item.packetKey ? (
+                      <button type="button" className="ab-key attention-packet-link" onClick={() => onOpenItem(item)}>
+                        {item.packetKey}
+                      </button>
+                    ) : null}
+                    <span>{item.repo}</span>
+                    {item.reference && pullRequestUrl ? (
+                      <a href={pullRequestUrl} target="_blank" rel="noreferrer">{item.reference}</a>
+                    ) : item.reference ? <span>{item.reference}</span> : null}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="button secondary attention-action"
+                  onClick={() => onAction(item)}
+                  disabled={Boolean(pending)}
+                >
+                  {pending ? "Working" : item.action.label}
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TodayOverview({
+  stats,
+  nextItem,
+  activity,
+  repoHealthRows,
+  attentionItems,
+  loadState,
+  reconciliationSyncState,
+  reconciliationActionState,
+  reconciliationMessage,
+  reconciliationAction,
+  agentRecoveryAction,
+  agentRecoveryMessage,
+  onAttentionAction,
+  onOpenAttention,
+  onOpenPacket,
+  onClaimPacket,
+  claimState,
+  onNavigate,
+}) {
   return (
     <>
+      <TodayAttentionInbox
+        items={attentionItems}
+        loadState={loadState}
+        reconciliationSyncState={reconciliationSyncState}
+        reconciliationActionState={reconciliationActionState}
+        reconciliationMessage={reconciliationMessage}
+        reconciliationAction={reconciliationAction}
+        agentRecoveryAction={agentRecoveryAction}
+        agentRecoveryMessage={agentRecoveryMessage}
+        onAction={onAttentionAction}
+        onOpenItem={onOpenAttention}
+      />
+
       <section className="today-hero" aria-label="Today overview">
         <article className="today-next">
           <span className="tn-eyebrow">Next ready packet</span>
@@ -3910,6 +4208,13 @@ function Icon({ name }) {
       </>
     ),
     check: <path d="m5 12 4 4L19 6" />,
+    warning: (
+      <>
+        <path d="M12 4 3 19h18L12 4Z" />
+        <path d="M12 10v4" />
+        <path d="M12 16h.01" />
+      </>
+    ),
     moon: (
       <>
         <path d="M20 14.8A8.5 8.5 0 0 1 9.2 4a7.2 7.2 0 1 0 10.8 10.8Z" />

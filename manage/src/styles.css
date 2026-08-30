@@ -2063,6 +2063,56 @@ textarea {
   line-height: 1.45;
 }
 
+.saved-view-controls {
+  display: grid;
+  gap: var(--manage-gap-tight);
+  margin: var(--manage-gap) 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--manage-border);
+  border-radius: 8px;
+  background: var(--manage-surface-soft);
+}
+
+.saved-view-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--manage-gap-tight);
+}
+
+.saved-view-row label {
+  min-width: min(220px, 100%);
+  flex: 1 1 180px;
+}
+
+.saved-view-status {
+  color: var(--manage-muted);
+  font-size: 12px;
+}
+
+.saved-view-status.is-failed {
+  color: var(--manage-red);
+  display: flex;
+  align-items: center;
+  gap: var(--manage-gap-tight);
+}
+
+.saved-view-dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: var(--manage-panel-padding);
+  border: 1px solid var(--manage-border);
+  border-radius: 8px;
+  background: var(--manage-surface);
+  box-shadow: var(--shadow-xl);
+}
+
+.saved-view-dialog .composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--manage-gap-tight);
+  margin-top: var(--manage-gap);
+}
+
 .search-box {
   position: relative;
   margin: var(--manage-gap) 0;
@@ -3813,6 +3863,7 @@ button.contribution-day.is-selected {
 @media (max-width: 620px) {
   .topbar-actions,
   .filters,
+  .saved-view-row,
   .field-grid,
   .composer-grid,
   .editor-grid,

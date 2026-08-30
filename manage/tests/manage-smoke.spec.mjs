@@ -1098,6 +1098,82 @@ test("initiative timeline drills from completed packet through merge and deploym
   await expect(page.getByLabel("Selected work packet")).toContainText(linkedPacket.key);
 });
 
+test("restores Backlog filters and packet selection from the URL", async ({ page }) => {
+  await page.goto("/?view=review&packet=TASK-101&auth_error=retry");
+  await expect(page.getByRole("heading", { name: "Review queue" })).toBeVisible();
+  await expect(page).toHaveURL(/view=review/);
+  await expect(page).toHaveURL(/packet=TASK-101/);
+  await expect(page).toHaveURL(/auth_error=retry/);
+
+  await page.goto("/?repo=web-app&status=ready_for_agent&label=bug&q=contact&packet=TASK-101");
+  await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
+  await expect(page.getByLabel("Repo")).toHaveValue("web-app");
+  await expect(page.getByLabel("Status")).toHaveValue("ready_for_agent");
+  await expect(page.getByLabel("Label")).toHaveValue("bug");
+  await expect(page.getByLabel("Search packets")).toHaveValue("contact");
+  await expect(page.locator(".work-row.is-selected")).toContainText("TASK-101");
+  await expect(page).toHaveURL(/repo=web-app/);
+  await expect(page).toHaveURL(/packet=TASK-101/);
+
+  await page.getByLabel("Repo").selectOption("api-service");
+  await expect(page).toHaveURL(/repo=api-service/);
+  await page.reload();
+  await expect(page.getByLabel("Repo")).toHaveValue("api-service");
+  await expect(page.getByLabel("Search packets")).toHaveValue("contact");
+  expect(page.url()).not.toMatch(CSC_LEAKAGE);
+});
+
+test("ignores CSC packet keys in the URL and keeps TASK selection", async ({ page }) => {
+  await page.goto("/?packet=CSC-433&repo=csc-workspace");
+
+  await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
+  await expect(page.getByLabel("Repo")).toHaveValue("all");
+  await expect(page.locator(".work-row.is-selected")).toContainText("TASK-101");
+  await expect(page).not.toHaveURL(/CSC-/);
+  await expect(page).not.toHaveURL(/csc-workspace/);
+  expect(page.url()).not.toMatch(CSC_LEAKAGE);
+});
+
+test("saves, applies, and reloads a named Backlog view without CSC leakage", async ({ page, request }) => {
+  const viewName = `Ready web-app ${Date.now()}`;
+  await page.goto("/");
+
+  await page.getByLabel("Repo").selectOption("web-app");
+  await page.getByLabel("Status").selectOption("ready_for_agent");
+  await page.getByLabel("Label").selectOption("bug");
+  await page.getByLabel("Search packets").fill("import");
+
+  await page.getByRole("button", { name: "Save view" }).click();
+  await page.locator("[data-saved-view-name]").fill(viewName);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByLabel("Saved views")).toContainText(viewName);
+  await expect(page.getByLabel("Saved view")).toHaveValue(/saved-view-/);
+
+  await page.getByLabel("Repo").selectOption("all");
+  await page.getByLabel("Status").selectOption("all");
+  await page.getByLabel("Search packets").fill("");
+  await expect(page.getByLabel("Saved view")).toHaveValue("");
+
+  await page.getByLabel("Saved view").selectOption({ label: viewName });
+  await expect(page.getByLabel("Repo")).toHaveValue("web-app");
+  await expect(page.getByLabel("Status")).toHaveValue("ready_for_agent");
+  await expect(page.getByLabel("Label")).toHaveValue("bug");
+  await expect(page.getByLabel("Search packets")).toHaveValue("import");
+  await expect(page).toHaveURL(/repo=web-app/);
+  await expect(page).toHaveURL(/status=ready_for_agent/);
+  await expect(page).toHaveURL(/q=import/);
+
+  await page.reload();
+  await expect(page.getByLabel("Repo")).toHaveValue("web-app");
+  await page.getByLabel("Saved view").selectOption({ label: viewName });
+  await expect(page.getByLabel("Search packets")).toHaveValue("import");
+
+  const listed = await (await request.get("/api/saved-views")).json();
+  expect(listed.savedViews.some((view) => view.name === viewName)).toBe(true);
+  expect(JSON.stringify(listed)).not.toMatch(CSC_LEAKAGE);
+  expect(JSON.stringify(listed)).not.toMatch(/csc-workspace|regvault|crm-deploy/i);
+});
+
 test("refreshes read-only GitHub cache", async ({ page, request }) => {
   const sync = await request.post("/api/github/sync", {
     data: { mock: true },
@@ -1364,6 +1440,8 @@ test("enforces agent least privilege and browser write protection", async ({ bas
       ["get", "/api/work-items", undefined],
       ["get", "/api/initiatives", undefined],
       ["post", "/api/initiatives", { title: "Agent should not create initiatives" }],
+      ["get", "/api/saved-views", undefined],
+      ["post", "/api/saved-views", { name: "Agent should not save views", state: { repo: "web-app" } }],
     ]) {
       const response = await agent[method](path, { data, failOnStatusCode: false });
       expect(response.status(), `${method.toUpperCase()} ${path}`).toBe(403);

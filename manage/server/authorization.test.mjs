@@ -70,6 +70,8 @@ describe("permission matrix", () => {
       "work-items",
       "initiatives",
       "initiative",
+      "saved-views",
+      "saved-view",
       "reset",
       "agent-bootstrap",
       "agent-next-key",
@@ -81,8 +83,15 @@ describe("permission matrix", () => {
     ]));
     expect(manageRoutePolicies.map((policy) => policy.id)).not.toEqual(expect.arrayContaining([
       "audit-events",
-      "saved-views",
     ]));
+    expect(permissionForRequest("/api/saved-views", "GET").permission).toBe(managePermissions.manageSavedViews);
+    expect(permissionForRequest("/api/saved-views", "POST").permission).toBe(managePermissions.manageSavedViews);
+    expect(permissionForRequest("/api/saved-views/saved-view-1", "PATCH").permission).toBe(
+      managePermissions.manageSavedViews,
+    );
+    expect(permissionForRequest("/api/saved-views/saved-view-1", "DELETE").permission).toBe(
+      managePermissions.manageSavedViews,
+    );
     expect(permissionForRequest("/api/initiatives", "GET").permission).toBe(managePermissions.viewWorkspace);
     expect(permissionForRequest("/api/initiatives", "POST").permission).toBe(managePermissions.updateWorkspace);
     expect(permissionForRequest("/api/initiatives/initiative-1", "PATCH").permission).toBe(
@@ -99,6 +108,7 @@ describe("permission matrix", () => {
     expect(roleHasPermission("viewer", managePermissions.viewWorkspace)).toBe(true);
     expect(roleHasPermission("viewer", managePermissions.updateWorkspace)).toBe(false);
     expect(roleHasPermission("viewer", managePermissions.viewAgentContext)).toBe(false);
+    expect(roleHasPermission("viewer", managePermissions.manageSavedViews)).toBe(false);
   });
 
   it("limits agents to lifecycle and agent-context routes", () => {
@@ -133,6 +143,10 @@ describe("permission matrix", () => {
       ["GET", "/api/initiatives"],
       ["POST", "/api/initiatives"],
       ["PATCH", "/api/initiatives/initiative-1"],
+      ["GET", "/api/saved-views"],
+      ["POST", "/api/saved-views"],
+      ["PATCH", "/api/saved-views/saved-view-1"],
+      ["DELETE", "/api/saved-views/saved-view-1"],
     ]) {
       expect(
         () => authorizeManageRequest(agentRequest(method), { pathname, method }),

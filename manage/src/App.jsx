@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   buildAgentClaimCommand,
   buildAgentClaimPowerShellCommand,
@@ -36,9 +36,12 @@ import {
   createBackup as createBackupRequest,
   createGithubIssue as createGithubIssueRequest,
   createInitiative as createInitiativeRequest,
+  createSavedView as createSavedViewRequest,
   createWorkItem as createWorkItemRequest,
+  deleteSavedView as deleteSavedViewRequest,
   fetchBackups,
   fetchInitiatives,
+  fetchSavedViews,
   fetchWorkItems,
   fetchGithubReconciliation,
   fetchGithubSync,
@@ -55,8 +58,16 @@ import {
   resolveGithubReconciliation,
   syncGithub,
   updateInitiative as updateInitiativeRequest,
+  updateSavedView as updateSavedViewRequest,
   updateWorkItem,
 } from "./lib/manageApi.mjs";
+import {
+  defaultManageViewState,
+  manageViewRelativeUrl,
+  parseManageViewState,
+  savedBacklogState,
+  viewStateFromSavedBacklog,
+} from "./lib/manageViewState.mjs";
 
 const navItems = [
   { id: "today", label: "Today", icon: "dashboard" },
@@ -750,16 +761,32 @@ export default function App() {
   return <ManageApp onLogout={handleLogout} sessionMode={sessionMode} sessionUser={sessionInfo?.user} />;
 }
 
+function readInitialViewState() {
+  if (typeof window === "undefined") {
+    return defaultManageViewState;
+  }
+
+  return parseManageViewState(window.location.search);
+}
+
 function ManageApp({ onLogout, sessionMode, sessionUser }) {
-  const [activeNav, setActiveNav] = useState("backlog");
+  const initialView = readInitialViewState();
+  const historyIntentRef = useRef("replace");
+  const skipUrlWriteRef = useRef(false);
+  const [activeNav, setActiveNav] = useState(initialView.activeNav);
   const [items, setItems] = useState(seedWorkItems);
   const [initiatives, setInitiatives] = useState([]);
   const [selectedInitiativeId, setSelectedInitiativeId] = useState("");
-  const [selectedKey, setSelectedKey] = useState("TASK-101");
-  const [repoFilter, setRepoFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [labelFilter, setLabelFilter] = useState("all");
-  const [query, setQuery] = useState("");
+  const [selectedKey, setSelectedKey] = useState(initialView.selectedKey || "TASK-101");
+  const [repoFilter, setRepoFilter] = useState(initialView.repoFilter);
+  const [statusFilter, setStatusFilter] = useState(initialView.statusFilter);
+  const [labelFilter, setLabelFilter] = useState(initialView.labelFilter);
+  const [query, setQuery] = useState(initialView.query);
+  const [savedViews, setSavedViews] = useState([]);
+  const [savedViewWarnings, setSavedViewWarnings] = useState([]);
+  const [savedViewState, setSavedViewState] = useState("idle");
+  const [savedViewMessage, setSavedViewMessage] = useState("Saved views ready");
+  const [appliedSavedViewId, setAppliedSavedViewId] = useState("");
   const [showComposer, setShowComposer] = useState(false);
   const [showInitiativeComposer, setShowInitiativeComposer] = useState(false);
   const [copyState, setCopyState] = useState("idle");
@@ -881,9 +908,95 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
 
   useEffect(() => {
     if (items.length > 0 && !items.some((item) => item.key === selectedKey)) {
+      historyIntentRef.current = "replace";
       setSelectedKey(items[0].key);
     }
   }, [items, selectedKey]);
+
+  const viewState = useMemo(
+    () => ({
+      activeNav,
+      repoFilter,
+      statusFilter,
+      labelFilter,
+      query,
+      selectedKey,
+    }),
+    [activeNav, labelFilter, query, repoFilter, selectedKey, statusFilter],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || skipUrlWriteRef.current) {
+      skipUrlWriteRef.current = false;
+      return;
+    }
+
+    const nextUrl = manageViewRelativeUrl(window.location, viewState);
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+
+    if (nextUrl === currentUrl) {
+      return;
+    }
+
+    if (historyIntentRef.current === "push") {
+      window.history.pushState(viewState, "", nextUrl);
+    } else {
+      window.history.replaceState(viewState, "", nextUrl);
+    }
+
+    historyIntentRef.current = "replace";
+  }, [viewState]);
+
+  useEffect(() => {
+    function onPopState() {
+      const next = parseManageViewState(window.location.search);
+      skipUrlWriteRef.current = true;
+      setActiveNav(next.activeNav);
+      setRepoFilter(next.repoFilter);
+      setStatusFilter(next.statusFilter);
+      setLabelFilter(next.labelFilter);
+      setQuery(next.query);
+      if (next.selectedKey) {
+        setSelectedKey(next.selectedKey);
+      }
+    }
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (!["admin", "operator"].includes(sessionUser?.role)) {
+      return undefined;
+    }
+
+    let canceled = false;
+
+    async function loadSavedViews() {
+      setSavedViewState("loading");
+      setSavedViewMessage("Loading saved views");
+
+      try {
+        const payload = await fetchSavedViews();
+        if (!canceled) {
+          setSavedViews(payload.savedViews || []);
+          setSavedViewWarnings(payload.warnings || []);
+          setSavedViewState("idle");
+          setSavedViewMessage((payload.savedViews || []).length > 0 ? "Saved views ready" : "No saved views yet");
+        }
+      } catch (error) {
+        if (!canceled) {
+          setSavedViewState("failed");
+          setSavedViewMessage(error.message);
+        }
+      }
+    }
+
+    loadSavedViews();
+    return () => {
+      canceled = true;
+    };
+  }, [sessionUser?.role]);
 
   const filteredItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -1115,7 +1228,49 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
   const reviewItems = useMemo(() => items.filter((item) => item.status === "needs_review"), [items]);
   const nextThemeMode = themeMode === "dark" ? "light" : "dark";
 
+  function queueHistory(intent = "push") {
+    historyIntentRef.current = intent;
+  }
+
+  function applyViewState(next, { history = "replace" } = {}) {
+    queueHistory(history);
+    setActiveNav(next.activeNav);
+    setRepoFilter(next.repoFilter);
+    setStatusFilter(next.statusFilter);
+    setLabelFilter(next.labelFilter);
+    setQuery(next.query);
+    if (next.selectedKey) {
+      setSelectedKey(next.selectedKey);
+    }
+  }
+
+  function changeRepoFilter(value) {
+    queueHistory("push");
+    setRepoFilter(value);
+  }
+
+  function changeStatusFilter(value) {
+    queueHistory("push");
+    setStatusFilter(value);
+  }
+
+  function changeLabelFilter(value) {
+    queueHistory("push");
+    setLabelFilter(value);
+  }
+
+  function changeQuery(value) {
+    queueHistory("replace");
+    setQuery(value);
+  }
+
+  function changeSelectedKey(value) {
+    queueHistory("push");
+    setSelectedKey(value);
+  }
+
   function selectNav(navId) {
+    queueHistory("push");
     setActiveNav(navId);
 
     if (navId === "review") {
@@ -1140,11 +1295,13 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
       return;
     }
 
+    queueHistory("push");
     setSelectedKey(key);
     setActiveNav("backlog");
   }
 
   function openReviewPacket(key) {
+    queueHistory("push");
     if (key) {
       setSelectedKey(key);
     }
@@ -1153,6 +1310,133 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     setRepoFilter("all");
     setLabelFilter("all");
     setActiveNav("review");
+  }
+
+  const canManageSavedViews = ["admin", "operator"].includes(sessionUser?.role);
+  const currentSavedState = savedBacklogState(viewState);
+  const matchingSavedView = savedViews.find((view) =>
+    view.state.repo === currentSavedState.repo
+    && view.state.status === currentSavedState.status
+    && view.state.label === currentSavedState.label
+    && view.state.query === currentSavedState.query,
+  );
+  const activeSavedViewId = matchingSavedView?.id || "";
+  const updateTargetId = appliedSavedViewId && savedViews.some((view) => view.id === appliedSavedViewId)
+    ? appliedSavedViewId
+    : activeSavedViewId;
+
+  function applySavedView(id) {
+    const view = savedViews.find((candidate) => candidate.id === id);
+
+    if (!view) {
+      setAppliedSavedViewId("");
+      return;
+    }
+
+    applyViewState(viewStateFromSavedBacklog(view.state, viewState), { history: "push" });
+    setAppliedSavedViewId(view.id);
+  }
+
+  async function refreshSavedViews(nextViews, warnings = []) {
+    setSavedViews(nextViews);
+    setSavedViewWarnings(warnings);
+    setSavedViewState("idle");
+    setSavedViewMessage(nextViews.length > 0 ? "Saved views ready" : "No saved views yet");
+  }
+
+  async function handleCreateSavedView(name) {
+    setSavedViewState("saving");
+    setSavedViewMessage("Saving view");
+
+    try {
+      const payload = await createSavedViewRequest(
+        { name, state: currentSavedState },
+        { idempotencyKey: globalThis.crypto?.randomUUID?.() },
+      );
+      const listed = await fetchSavedViews();
+      await refreshSavedViews(listed.savedViews || [payload.savedView], listed.warnings || []);
+      setAppliedSavedViewId(payload.savedView.id);
+      setSavedViewMessage(`Saved “${payload.savedView.name}”`);
+      return true;
+    } catch (error) {
+      setSavedViewState("failed");
+      setSavedViewMessage(error.message);
+      return false;
+    }
+  }
+
+  async function handleUpdateSavedView(id) {
+    const target = savedViews.find((view) => view.id === id);
+
+    if (!target) {
+      return false;
+    }
+
+    setSavedViewState("saving");
+    setSavedViewMessage("Updating view");
+
+    try {
+      await updateSavedViewRequest(id, { state: currentSavedState, expectedRevision: target.revision });
+      const listed = await fetchSavedViews();
+      await refreshSavedViews(listed.savedViews || [], listed.warnings || []);
+      setAppliedSavedViewId(id);
+      setSavedViewMessage(`Updated “${target.name}”`);
+      return true;
+    } catch (error) {
+      setSavedViewState("failed");
+      setSavedViewMessage(error.message);
+      return false;
+    }
+  }
+
+  async function handleRenameSavedView(id, name) {
+    const target = savedViews.find((view) => view.id === id);
+
+    if (!target) {
+      return false;
+    }
+
+    setSavedViewState("saving");
+    setSavedViewMessage("Renaming view");
+
+    try {
+      await updateSavedViewRequest(id, { name, expectedRevision: target.revision });
+      const listed = await fetchSavedViews();
+      await refreshSavedViews(listed.savedViews || [], listed.warnings || []);
+      setAppliedSavedViewId(id);
+      setSavedViewMessage(`Renamed to “${name.trim()}”`);
+      return true;
+    } catch (error) {
+      setSavedViewState("failed");
+      setSavedViewMessage(error.message);
+      return false;
+    }
+  }
+
+  async function handleDeleteSavedView(id) {
+    const target = savedViews.find((view) => view.id === id);
+
+    if (!target) {
+      return false;
+    }
+
+    setSavedViewState("saving");
+    setSavedViewMessage("Deleting view");
+
+    try {
+      await deleteSavedViewRequest(id, target.revision);
+      const listed = await fetchSavedViews();
+      await refreshSavedViews(listed.savedViews || [], listed.warnings || []);
+      if (appliedSavedViewId === id) {
+        setAppliedSavedViewId("");
+      }
+      setSavedViewMessage(`Deleted “${target.name}”`);
+      return true;
+    } catch (error) {
+      setSavedViewState("failed");
+      setSavedViewMessage(error.message);
+      return false;
+    }
   }
 
   function openAttentionDestination(attention) {
@@ -1880,7 +2164,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
               <div className="filters">
                 <label>
                   <span>Repo</span>
-                  <select value={repoFilter} onChange={(event) => setRepoFilter(event.target.value)}>
+                  <select aria-label="Repo" value={repoFilter} onChange={(event) => changeRepoFilter(event.target.value)}>
                     <option value="all">All repos</option>
                     {repoOptions.map((repo) => (
                       <option key={repo} value={repo}>
@@ -1891,7 +2175,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
                 </label>
                 <label>
                   <span>Status</span>
-                  <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                  <select aria-label="Status" value={statusFilter} onChange={(event) => changeStatusFilter(event.target.value)}>
                     <option value="all">All statuses</option>
                     {statusOptions.map((status) => (
                       <option key={status.id} value={status.id}>
@@ -1902,7 +2186,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
                 </label>
                 <label>
                   <span>Label</span>
-                  <select value={labelFilter} onChange={(event) => setLabelFilter(event.target.value)}>
+                  <select aria-label="Label" value={labelFilter} onChange={(event) => changeLabelFilter(event.target.value)}>
                     <option value="all">All labels</option>
                     {availableLabels.map((label) => (
                       <option key={label} value={label}>
@@ -1914,11 +2198,36 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
               </div>
             </div>
 
+            {canManageSavedViews ? (
+              <SavedViewControls
+                savedViews={savedViews}
+                activeId={activeSavedViewId}
+                updateTargetId={updateTargetId}
+                state={savedViewState}
+                message={[savedViewMessage, ...savedViewWarnings].filter(Boolean).join(" ")}
+                onApply={applySavedView}
+                onCreate={handleCreateSavedView}
+                onUpdate={handleUpdateSavedView}
+                onRename={handleRenameSavedView}
+                onDelete={handleDeleteSavedView}
+                onRetry={() => {
+                  setSavedViewState("loading");
+                  fetchSavedViews()
+                    .then((payload) => refreshSavedViews(payload.savedViews || [], payload.warnings || []))
+                    .catch((error) => {
+                      setSavedViewState("failed");
+                      setSavedViewMessage(error.message);
+                    });
+                }}
+              />
+            ) : null}
+
             <label className="search-box">
               <Icon name="search" />
               <input
+                aria-label="Search packets"
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => changeQuery(event.target.value)}
                 placeholder="Search packets, labels, projects, repos..."
               />
             </label>
@@ -1929,7 +2238,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
                   type="button"
                   key={item.key}
                   className={`work-row ${selectedItem.key === item.key ? "is-selected" : ""}`}
-                  onClick={() => setSelectedKey(item.key)}
+                  onClick={() => changeSelectedKey(item.key)}
                 >
                   <div className="row-main">
                     <div className="row-title">
@@ -4598,10 +4907,143 @@ function RepoStat({ label, value, alert = false }) {
   );
 }
 
+function SavedViewControls({
+  savedViews,
+  activeId,
+  updateTargetId,
+  state,
+  message,
+  onApply,
+  onCreate,
+  onUpdate,
+  onRename,
+  onDelete,
+  onRetry,
+}) {
+  const [editorMode, setEditorMode] = useState("");
+  const [name, setName] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const active = savedViews.find((view) => view.id === activeId);
+  const updateTarget = savedViews.find((view) => view.id === updateTargetId);
+  const busy = ["loading", "saving"].includes(state);
+
+  function openEditor(mode) {
+    setName(mode === "rename" ? active?.name || "" : "");
+    setEditorMode(mode);
+  }
+
+  async function submitEditor(event) {
+    event.preventDefault();
+    if (editorMode === "rename" && !active) return;
+    const completed = editorMode === "rename"
+      ? await onRename(active.id, name)
+      : await onCreate(name);
+    if (completed) setEditorMode("");
+  }
+
+  async function confirmDelete() {
+    if (await onDelete(deleteTarget.id)) setDeleteTarget(null);
+  }
+
+  return (
+    <div className="saved-view-controls" role="group" aria-label="Saved views">
+      <div className="saved-view-row">
+        <label>
+          <span>Saved view</span>
+          <select
+            aria-label="Saved view"
+            value={activeId}
+            onChange={(event) => onApply(event.target.value)}
+            disabled={busy || savedViews.length === 0}
+          >
+            <option value="">{savedViews.length > 0 ? "Choose a view" : "No saved views"}</option>
+            {savedViews.map((view) => (
+              <option key={view.id} value={view.id}>{view.name}</option>
+            ))}
+          </select>
+        </label>
+        <button type="button" className="button secondary" onClick={() => openEditor("create")} disabled={busy}>
+          Save view
+        </button>
+        <button type="button" className="button secondary" onClick={() => onUpdate(updateTarget.id)} disabled={busy || !updateTarget}>
+          Update
+        </button>
+        <button type="button" className="button secondary" onClick={() => openEditor("rename")} disabled={busy || !active}>
+          Rename
+        </button>
+        <button type="button" className="button danger" onClick={() => setDeleteTarget(active)} disabled={busy || !active}>
+          Delete
+        </button>
+      </div>
+      <div className={`saved-view-status is-${state}`} role="status">
+        {message}
+        {state === "failed" ? (
+          <button type="button" className="button secondary" onClick={onRetry}>Retry</button>
+        ) : null}
+      </div>
+
+      {editorMode ? (
+        <div className="modal-backdrop" role="presentation">
+          <form className="saved-view-dialog" onSubmit={submitEditor}>
+            <div className="composer-header">
+              <div>
+                <span className="eyebrow">Backlog filters</span>
+                <h2>{editorMode === "rename" ? "Rename saved view" : "Save current view"}</h2>
+              </div>
+              <button type="button" className="icon-button" aria-label="Close saved view editor" onClick={() => setEditorMode("")} disabled={busy}>
+                <Icon name="close" />
+              </button>
+            </div>
+            <label className="field">
+              <span>Name</span>
+              <input
+                data-saved-view-name
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                maxLength={80}
+                required
+              />
+            </label>
+            <div className="composer-actions">
+              <button type="button" className="button secondary" onClick={() => setEditorMode("")} disabled={busy}>Cancel</button>
+              <button type="submit" className="button primary" disabled={busy || !name.trim()}>{busy ? "Saving" : "Save"}</button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {deleteTarget ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="saved-view-dialog">
+            <div className="composer-header">
+              <div>
+                <span className="eyebrow">Confirmation</span>
+                <h2>Delete saved view?</h2>
+              </div>
+            </div>
+            <p>This removes “{deleteTarget.name}” from your saved views. Packet data is not changed.</p>
+            <div className="composer-actions">
+              <button type="button" className="button secondary" onClick={() => setDeleteTarget(null)} disabled={busy}>Cancel</button>
+              <button type="button" className="button danger" onClick={confirmDelete} disabled={busy}>
+                {busy ? "Deleting" : "Delete view"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function LoginScreen({ error, onLogin, sessionInfo }) {
   const [token, setToken] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const githubLoginUrl = sessionInfo?.providers?.github ? sessionInfo.loginUrls?.github : "";
+  const githubStart = sessionInfo?.providers?.github ? sessionInfo.loginUrls?.github : "";
+  const githubLoginUrl = githubStart
+    ? `${githubStart}${githubStart.includes("?") ? "&" : "?"}returnTo=${encodeURIComponent(
+      typeof window === "undefined" ? "/" : `${window.location.pathname}${window.location.search}${window.location.hash}`,
+    )}`
+    : "";
 
   async function submit(event) {
     event.preventDefault();

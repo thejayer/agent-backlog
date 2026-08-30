@@ -24,6 +24,7 @@ import { fetchPullRequestDeliveryEvidence, readGithubCache, summarizeGithubSyncS
 import { completeGithubLogin, getGithubLoginStart } from "./githubOAuth.mjs";
 import { createStateSnapshot, getStorageStatus, listStateSnapshots, restoreStateSnapshot } from "./storage.mjs";
 import { createInitiative, listInitiatives, patchInitiative, resetInitiatives } from "./initiativeStore.mjs";
+import { createSavedView, deleteSavedView, listSavedViews, patchSavedView } from "./savedViewStore.mjs";
 import {
   applyGithubMatches,
   claimWorkItem,
@@ -573,6 +574,43 @@ async function handleRoute(req, res, baseUrl) {
     }
 
     methodAllowed(res, ["GET", "POST"]);
+    return true;
+  }
+
+  if (pathname === "/api/saved-views") {
+    if (method === "GET") {
+      sendJson(res, 200, await listSavedViews(authorization.session));
+      return true;
+    }
+
+    if (method === "POST") {
+      const result = await createSavedView(
+        authorization.session,
+        withMutationMetadata(req, await readJsonBody(req)),
+      );
+      sendJson(res, result.idempotentReplay ? 200 : 201, result);
+      return true;
+    }
+
+    methodAllowed(res, ["GET", "POST"]);
+    return true;
+  }
+
+  const savedViewMatch = pathname.match(/^\/api\/saved-views\/([^/]+)$/);
+  if (savedViewMatch) {
+    const id = decodeURIComponent(savedViewMatch[1]);
+
+    if (method === "PATCH") {
+      sendJson(res, 200, await patchSavedView(authorization.session, id, await readJsonBody(req)));
+      return true;
+    }
+
+    if (method === "DELETE") {
+      sendJson(res, 200, await deleteSavedView(authorization.session, id, await readJsonBody(req)));
+      return true;
+    }
+
+    methodAllowed(res, ["PATCH", "DELETE"]);
     return true;
   }
 

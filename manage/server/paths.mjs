@@ -19,3 +19,7 @@ export function getInitiativesPath() {
 export function getGithubCachePath() {
   return path.join(getManageDataDir(), "github-cache.json");
 }
+
+export function getSavedViewsPath() {
+  return path.join(getManageDataDir(), "saved-views.json");
+}

@@ -111,6 +111,18 @@ function withPrompt(workItem, baseUrl) {
   };
 }
 
+function withMutationMetadata(req, body = {}) {
+  const headerValue = req.headers["idempotency-key"];
+  const idempotencyKey = String(
+    body.idempotencyKey || (Array.isArray(headerValue) ? headerValue[0] : headerValue) || "",
+  ).trim();
+
+  return {
+    ...body,
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+  };
+}
+
 function agentTokenHint() {
   return getAccessToken() === "manage-local-agent" ? "manage-local-agent" : "$MANAGE_AUTH_TOKEN";
 }
@@ -208,7 +220,12 @@ async function prepareCompletionWrite(req, key, payload = {}) {
   const matches = findGithubMatchesForItem(workItem, githubCache);
 
   if (hasGithubMatches(matches)) {
-    const linked = await applyGithubMatches(workItem.key, matches);
+    const linked = await applyGithubMatches(workItem.key, {
+      ...matches,
+      expectedRevision: payload.expectedRevision ?? workItem.revision,
+      idempotencyKey: payload.idempotencyKey
+        || `completion-link:${workItem.key}:${String(payload.githubPrUrl || workItem.githubPrUrl || "").trim()}`,
+    });
     workItem = linked.workItem;
   }
 
@@ -224,11 +241,13 @@ async function prepareCompletionWrite(req, key, payload = {}) {
         const evidence = await fetchPullRequestDeliveryEvidence(parsed.slug, parsed.number);
         const fetched = evidence.pullRequest;
         if (fetched?.mergedAt) {
-          await applyGithubMatches(workItem.key, {
+          const linked = await applyGithubMatches(workItem.key, {
             source: githubCache?.source || "github-cache",
             repoSlug: parsed.slug,
             bestPrUrl: fetched.url,
             bestBranch: workItem.githubBranch || "",
+            expectedRevision: payload.expectedRevision ?? workItem.revision,
+            idempotencyKey: payload.idempotencyKey || `completion-link:${workItem.key}:${fetched.url}`,
             pullRequests: [{
               url: fetched.url,
               number: fetched.number,
@@ -242,6 +261,7 @@ async function prepareCompletionWrite(req, key, payload = {}) {
           return {
             principal,
             verifiedCompletionWriteback: verifiedCompletionWriteback(evidence),
+            expectedRevision: linked.workItem.revision,
           };
         }
       } catch {
@@ -270,6 +290,7 @@ async function prepareCompletionWrite(req, key, payload = {}) {
     return {
       principal,
       verifiedCompletionWriteback: verifiedCompletionWriteback(evidence),
+      expectedRevision: workItem.revision,
     };
   } catch (error) {
     throw Object.assign(new Error(`Unable to verify delivery evidence: ${error.message}`), { statusCode: 409 });
@@ -500,8 +521,12 @@ async function handleRoute(req, res, baseUrl) {
         continue;
       }
 
-      const result = await applyGithubMatches(workItem.key, matches);
-      workItems = result.workItems;
+      const result = await applyGithubMatches(workItem.key, {
+        ...matches,
+        expectedRevision: workItem.revision,
+        idempotencyKey: `github-link-all:${workItem.key}:${githubCache.refreshedAt || githubCache.source || "cache"}`,
+      });
+      workItems = workItems.map((item) => (item.key === workItem.key ? result.workItem : item));
       linked.push({
         key: workItem.key,
         branch: matches.bestBranch,
@@ -540,7 +565,7 @@ async function handleRoute(req, res, baseUrl) {
     }
 
     if (method === "POST") {
-      const result = await createWorkItem(await readJsonBody(req));
+      const result = await createWorkItem(withMutationMetadata(req, await readJsonBody(req)));
       sendJson(res, 201, result);
       return true;
     }
@@ -586,12 +611,16 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const body = await readJsonBody(req);
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const issue = await createGithubIssueForWorkItem(item, repo, {
       baseUrl,
       mock: Boolean(body.mock),
     });
-    const result = await recordGithubIssue(key, issue);
+    const result = await recordGithubIssue(key, {
+      ...issue,
+      expectedRevision: body.expectedRevision ?? item.revision,
+      idempotencyKey: body.idempotencyKey || (issue.url ? `github-issue:${issue.url}` : ""),
+    });
     sendJson(res, 201, {
       issue,
       created: true,
@@ -616,8 +645,13 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const matches = findGithubMatchesForItem(item, await readGithubCache());
-    const result = await applyGithubMatches(key, matches);
+    const result = await applyGithubMatches(key, {
+      ...matches,
+      expectedRevision: body.expectedRevision ?? item.revision,
+      idempotencyKey: body.idempotencyKey || `github-link:${key}:${matches.matchedAt || matches.source || "cache"}`,
+    });
     sendJson(res, 200, {
       workItem: result.workItem,
       workItems: result.workItems,
@@ -634,7 +668,7 @@ async function handleRoute(req, res, baseUrl) {
     }
 
     const key = decodeURIComponent(workItemMatch[1]);
-    const body = await readJsonBody(req);
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const completion = await prepareCompletionWrite(req, key, body);
     const result = await patchWorkItem(key, body, completion);
     sendJson(res, 200, result);
@@ -687,7 +721,7 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await createWorkItem(await readJsonBody(req));
+    const result = await createWorkItem(withMutationMetadata(req, await readJsonBody(req)));
     sendJson(res, 201, {
       ...result,
       ...withPrompt(result.workItem, baseUrl),
@@ -701,7 +735,7 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const body = await readJsonBody(req);
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const repo = body.repo || url.searchParams.get("repo");
     const label = body.label || url.searchParams.get("label");
     const item = findNextWorkItem(await listWorkItems(), { repo, label });
@@ -715,7 +749,10 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await claimWorkItem(item.key, body, { allowForce: canForceClaim(authorization?.session) });
+    const result = await claimWorkItem(item.key, {
+      ...body,
+      expectedRevision: body.expectedRevision ?? item.revision,
+    }, { allowForce: canForceClaim(authorization?.session) });
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
     return true;
   }
@@ -770,7 +807,7 @@ async function handleRoute(req, res, baseUrl) {
     }
 
     const key = decodeURIComponent(statusMatch[1]);
-    const body = await readJsonBody(req);
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const completion = await prepareCompletionWrite(req, key, body);
     const result = await updateTaskStatus(key, body, completion);
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
@@ -784,7 +821,7 @@ async function handleRoute(req, res, baseUrl) {
       return true;
     }
 
-    const result = await claimWorkItem(decodeURIComponent(claimMatch[1]), await readJsonBody(req), {
+    const result = await claimWorkItem(decodeURIComponent(claimMatch[1]), withMutationMetadata(req, await readJsonBody(req)), {
       allowForce: canForceClaim(authorization?.session),
     });
     sendJson(res, 200, withPrompt(result.workItem, baseUrl));
@@ -799,7 +836,7 @@ async function handleRoute(req, res, baseUrl) {
     }
 
     const key = decodeURIComponent(recoveryMatch[1]);
-    const body = await readJsonBody(req);
+    const body = withMutationMetadata(req, await readJsonBody(req));
     const session = authorization?.session || getSession(req);
     const actor = session?.user?.login || session?.user?.name || body.agent || "Operator";
     const result = await recoverAgentRun(key, body, { actor });
@@ -852,6 +889,8 @@ export async function routeManageRequest(req, res, baseUrl) {
       error: error.message || "Manage API request failed",
       ...(error.code ? { code: error.code } : {}),
       ...(error.details ? { details: error.details } : {}),
+      ...(Number.isFinite(error.expectedRevision) ? { expectedRevision: error.expectedRevision } : {}),
+      ...(Number.isFinite(error.actualRevision) ? { actualRevision: error.actualRevision } : {}),
     });
     return true;
   }

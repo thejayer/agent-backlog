@@ -153,8 +153,13 @@ Roles: **operator/admin** (full), **viewer** (`workspace:view`), **agent**
 - **`file`** (default) — JSON under `manage/data/`, with automatic pre-write
   snapshots. No external services.
 - **`firestore`** — set `MANAGE_STORAGE_BACKEND=firestore` and provide GCP
-  credentials. `@google-cloud/firestore` installs as an optional dependency and
-  is only loaded in this mode.
+  credentials. Packets are stored as one document each, with a
+  `work-items-counter` for the next `TASK-N` key. Writes carry a revision;
+  a stale write returns `409`. Mutating agent/operator calls accept an
+  `Idempotency-Key` header or `idempotencyKey` body field. Snapshots that
+  exceed Firestore's 1 MB document limit are stored as chunks and restored
+  as a single snapshot. `@google-cloud/firestore` installs as an optional
+  dependency and is only loaded in this mode.
 
 See [`.env.example`](.env.example) for the full configuration surface.
 

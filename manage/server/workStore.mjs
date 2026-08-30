@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { priorityOptions, statusOptions, workItems as seedWorkItems } from "../src/data/workItems.mjs";
 import { AGENT_RUN_EXTEND_LEASE_MINUTES } from "../src/lib/agentRunContract.mjs";
 import {
@@ -8,12 +8,19 @@ import {
   reviewCompletionEvidence,
 } from "../src/lib/reviewEvidence.mjs";
 import { deriveAgentRunHealth, isLeaseActive, normalizeLeaseMinutes } from "./agentRunHealth.mjs";
-import { readJsonState, writeJsonState } from "./storage.mjs";
+import { createWorkItemState, nextWorkItemKeyFromItems, readJsonState, writeJsonState, writeWorkItemMutation } from "./storage.mjs";
 
 const allowedStatuses = new Set(statusOptions.map((status) => status.id));
 const allowedPriorities = new Set(priorityOptions.map((priority) => priority.id));
 const seedLabelsByKey = new Map(seedWorkItems.map((item) => [item.key, item.labels || []]));
 const completedStatuses = new Set(["needs_review", "done", "blocked"]);
+let workItemMutationQueue = Promise.resolve();
+
+function serializeWorkItemMutation(operation) {
+  const result = workItemMutationQueue.then(operation, operation);
+  workItemMutationQueue = result.then(() => undefined, () => undefined);
+  return result;
+}
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -175,12 +182,7 @@ function uniqueLines(values) {
 }
 
 function nextKey(items) {
-  const maxNumber = items.reduce((max, item) => {
-    const match = String(item.key || "").match(/^TASK-(\d+)$/);
-    return match ? Math.max(max, Number(match[1])) : max;
-  }, 100);
-
-  return `TASK-${maxNumber + 1}`;
+  return nextWorkItemKeyFromItems(items);
 }
 
 export async function nextWorkItemKey() {
@@ -200,9 +202,12 @@ function normalizeWorkItem(item) {
 
 function publicWorkItem(item, now = new Date()) {
   const normalized = normalizeWorkItem(item);
+  const { _persistence, ...visible } = normalized;
+  const revision = Math.max(Number(_persistence?.revision) || Number(normalized.revision) || 0, 0);
   return {
-    ...normalized,
-    agentRunHealth: deriveAgentRunHealth(normalized, now),
+    ...visible,
+    revision,
+    agentRunHealth: deriveAgentRunHealth(visible, now),
   };
 }
 
@@ -211,11 +216,105 @@ function publicWorkItems(items, now = new Date()) {
 }
 
 async function writeWorkItems(items) {
-  await writeJsonState("work-items", items);
+  return writeJsonState("work-items", items);
+}
+
+function idempotencyOperationId(value) {
+  const normalized = String(value || "").trim();
+  return normalized ? createHash("sha256").update(normalized).digest("hex") : "";
+}
+
+function workItemRevision(item) {
+  return Math.max(Number(item?._persistence?.revision) || Number(item?.revision) || 0, 0);
+}
+
+function workItemConflict(key, expectedRevision, actualRevision) {
+  return Object.assign(
+    new Error(`${key} changed concurrently. Refresh the board and retry the operation.`),
+    {
+      statusCode: 409,
+      code: "WORK_ITEM_REVISION_CONFLICT",
+      expectedRevision,
+      actualRevision,
+    },
+  );
+}
+
+function workItemMutationResult(item, items, { changed = true, idempotentReplay = false } = {}) {
+  const workItem = publicWorkItem(item);
+  return {
+    workItem,
+    workItems: publicWorkItems(items),
+    delta: {
+      upsert: changed ? [workItem] : [],
+      remove: [],
+    },
+    revision: workItem.revision,
+    idempotentReplay,
+  };
+}
+
+function replayedWorkItemMutation(item, items, idempotencyKey) {
+  const operationId = idempotencyOperationId(idempotencyKey);
+  return operationId && item?._persistence?.recentOperationIds?.includes(operationId)
+    ? workItemMutationResult(item, items, { changed: false, idempotentReplay: true })
+    : null;
+}
+
+async function commitWorkItemMutation(items, index, nextItem, {
+  expectedRevision,
+  idempotencyKey = "",
+} = {}) {
+  const currentItem = items[index];
+  const currentRevision = workItemRevision(currentItem);
+  const requiredRevision = Number.isFinite(Number(expectedRevision))
+    ? Number(expectedRevision)
+    : currentRevision;
+  const operationId = idempotencyOperationId(idempotencyKey);
+  const recentOperationIds = Array.isArray(currentItem?._persistence?.recentOperationIds)
+    ? currentItem._persistence.recentOperationIds
+    : [];
+
+  if (operationId && recentOperationIds.includes(operationId)) {
+    return workItemMutationResult(currentItem, items, { changed: false, idempotentReplay: true });
+  }
+
+  if (requiredRevision !== currentRevision) {
+    throw workItemConflict(currentItem.key, requiredRevision, currentRevision);
+  }
+
+  const persistedItem = {
+    ...nextItem,
+    _persistence: {
+      revision: currentRevision + 1,
+      expectedRevision: currentRevision,
+      recentOperationIds: operationId
+        ? [...recentOperationIds, operationId].slice(-20)
+        : recentOperationIds,
+      createOperationId: currentItem?._persistence?.createOperationId || "",
+    },
+  };
+  const nextItems = [...items];
+  nextItems[index] = persistedItem;
+
+  try {
+    await writeWorkItemMutation(nextItems, persistedItem);
+  } catch (error) {
+    if (error?.statusCode === 409 && operationId) {
+      const latestItems = await readWorkItems();
+      const latest = latestItems.find((item) => item.key === currentItem.key);
+      if (latest?._persistence?.recentOperationIds?.includes(operationId)) {
+        return workItemMutationResult(latest, latestItems, { changed: false, idempotentReplay: true });
+      }
+    }
+    throw error;
+  }
+
+  return workItemMutationResult(persistedItem, nextItems);
 }
 
 export async function readWorkItems() {
-  const parsed = await readJsonState("work-items", () => clone(seedWorkItems));
+  const parsed = await readJsonState("work-items", () => clone(seedWorkItems), { includePersistence: true });
 
   if (!Array.isArray(parsed)) {
     throw Object.assign(new Error("Manage work-items state must contain an array"), { statusCode: 500 });
@@ -224,19 +323,21 @@ export async function readWorkItems() {
   return parsed.map((item) => normalizeWorkItem(item));
 }
 
-export async function resetWorkItems() {
+async function resetWorkItemsUnlocked() {
   const items = clone(seedWorkItems);
   await writeWorkItems(items);
   return publicWorkItems(items);
+}
+
+export async function resetWorkItems() {
+  return serializeWorkItemMutation(resetWorkItemsUnlocked);
 }
 
 export async function listWorkItems() {
   return publicWorkItems(await readWorkItems());
 }
 
-export async function createWorkItem(payload) {
-  const items = await readWorkItems();
-  const key = nextKey(items);
+async function createWorkItemUnlocked(payload) {
   const title = String(payload.title || "Untitled work packet").trim();
   const now = new Date().toISOString();
   const status = payload.ready ? "ready_for_agent" : payload.status || "draft";
@@ -251,7 +352,7 @@ export async function createWorkItem(payload) {
     throw Object.assign(new Error("New work packets cannot be created as done."), { statusCode: 400 });
   }
 
-  const workItem = {
+  const result = await createWorkItemState((key) => ({
     id: `w-${key.toLowerCase()}`,
     key,
     title,
@@ -275,8 +376,8 @@ export async function createWorkItem(payload) {
     githubIssueUrl: String(payload.githubIssueUrl || "").trim(),
     githubIssueNumber: payload.githubIssueNumber ? Number(payload.githubIssueNumber) : null,
     githubIssueTitle: String(payload.githubIssueTitle || "").trim(),
-    githubLinks: null,
-    lastGithubLinkUpdate: null,
+    githubLinks: payload.githubLinks || null,
+    lastGithubLinkUpdate: payload.lastGithubLinkUpdate || null,
     agent: String(payload.agent || "").trim(),
     claimedBy: "",
     claimedAt: "",
@@ -289,18 +390,22 @@ export async function createWorkItem(payload) {
     completedAt: "",
     createdAt: now,
     updatedAt: now,
-  };
+  }), {
+    fallbackFactory: () => clone(seedWorkItems),
+    idempotencyKey: payload.idempotencyKey,
+  });
 
-  const nextItems = [workItem, ...items];
-  await writeWorkItems(nextItems);
-
-  return {
-    workItem: publicWorkItem(workItem),
-    workItems: publicWorkItems(nextItems),
-  };
+  return workItemMutationResult(result.workItem, await readWorkItems(), {
+    changed: !result.idempotentReplay,
+    idempotentReplay: result.idempotentReplay,
+  });
 }
 
-export async function patchWorkItem(key, updates, options = {}) {
+export async function createWorkItem(payload) {
+  return serializeWorkItemMutation(() => createWorkItemUnlocked(payload));
+}
+
+async function patchWorkItemUnlocked(key, updates, options = {}) {
   const items = await readWorkItems();
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
@@ -399,17 +504,17 @@ export async function patchWorkItem(key, updates, options = {}) {
       : currentItem.completedAt || "",
     updatedAt: now,
   };
-  const nextItems = [...items];
-  nextItems[index] = nextItem;
-  await writeWorkItems(nextItems);
-
-  return {
-    workItem: publicWorkItem(nextItem),
-    workItems: publicWorkItems(nextItems),
-  };
+  return commitWorkItemMutation(items, index, nextItem, {
+    expectedRevision: options.expectedRevision ?? updates.expectedRevision,
+    idempotencyKey: options.idempotencyKey || updates.idempotencyKey,
+  });
 }
 
-export async function claimWorkItem(key, payload = {}, { allowForce = false } = {}) {
+export async function patchWorkItem(key, updates, options = {}) {
+  return serializeWorkItemMutation(() => patchWorkItemUnlocked(key, updates, options));
+}
+
+async function claimWorkItemUnlocked(key, payload = {}, { allowForce = false } = {}) {
   const items = await readWorkItems();
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
@@ -420,6 +525,11 @@ export async function claimWorkItem(key, payload = {}, { allowForce = false } = 
 
   const currentItem = items[index];
   const now = new Date();
+  const replay = replayedWorkItemMutation(currentItem, items, payload.idempotencyKey);
+
+  if (replay) {
+    return replay;
+  }
 
   if (Object.prototype.hasOwnProperty.call(payload, "expectedAgentRunId")) {
     assertExpectedAgentRunId(currentItem, payload.expectedAgentRunId);
@@ -478,14 +588,14 @@ export async function claimWorkItem(key, payload = {}, { allowForce = false } = 
     ...emptyCompletionState(),
     updatedAt: claimedAt,
   };
-  const nextItems = [...items];
-  nextItems[index] = nextItem;
-  await writeWorkItems(nextItems);
+  return commitWorkItemMutation(items, index, nextItem, {
+    expectedRevision: payload.expectedRevision,
+    idempotencyKey: payload.idempotencyKey,
+  });
+}
 
-  return {
-    workItem: publicWorkItem(nextItem),
-    workItems: publicWorkItems(nextItems),
-  };
+export async function claimWorkItem(key, payload = {}, { allowForce = false } = {}) {
+  return serializeWorkItemMutation(() => claimWorkItemUnlocked(key, payload, { allowForce }));
 }
 
 function assertExpectedAgentRunId(currentItem, expectedAgentRunId) {
@@ -539,115 +649,115 @@ function recoveryActor(payload = {}, authenticatedActor = "") {
 }
 
 export async function recoverAgentRun(key, payload = {}, { actor: authenticatedActor } = {}) {
-  const action = String(payload.action || "").trim().toLowerCase();
+  return serializeWorkItemMutation(async () => {
+    const action = String(payload.action || "").trim().toLowerCase();
 
-  if (!["release", "reclaim", "extend"].includes(action)) {
-    throw Object.assign(new Error("Recovery action must be release, reclaim, or extend"), { statusCode: 400 });
-  }
+    if (!["release", "reclaim", "extend"].includes(action)) {
+      throw Object.assign(new Error("Recovery action must be release, reclaim, or extend"), { statusCode: 400 });
+    }
 
-  if (!Object.prototype.hasOwnProperty.call(payload || {}, "agentRunId")) {
-    throw Object.assign(new Error("The observed agent run ID is required for recovery actions"), { statusCode: 400 });
-  }
+    if (!Object.prototype.hasOwnProperty.call(payload || {}, "agentRunId")) {
+      throw Object.assign(new Error("The observed agent run ID is required for recovery actions"), { statusCode: 400 });
+    }
 
-  if (action === "reclaim") {
-    const preview = await readObservedRecoveryItem(key, { ...payload, action });
-    const previousRunId = String(preview.currentItem.agentRunId || "").trim() || "missing run context";
-    const result = await claimWorkItem(key, {
-      agent: payload.agent || preview.currentItem.claimedBy || preview.currentItem.agent || "Operator",
-      claimedBy: payload.agent || preview.currentItem.claimedBy || preview.currentItem.agent || "Operator",
-      leaseMinutes: payload.leaseMinutes,
-      force: true,
-      expectedAgentRunId: payload.agentRunId,
-      note: String(payload.note || `Reclaimed from ${previousRunId}.`).trim(),
-    }, { allowForce: true });
-    return { action, ...result };
-  }
+    if (action === "reclaim") {
+      const preview = await readObservedRecoveryItem(key, { ...payload, action });
+      const previousRunId = String(preview.currentItem.agentRunId || "").trim() || "missing run context";
+      const result = await claimWorkItemUnlocked(key, {
+        agent: payload.agent || preview.currentItem.claimedBy || preview.currentItem.agent || "Operator",
+        claimedBy: payload.agent || preview.currentItem.claimedBy || preview.currentItem.agent || "Operator",
+        leaseMinutes: payload.leaseMinutes,
+        force: true,
+        expectedAgentRunId: payload.agentRunId,
+        expectedRevision: payload.expectedRevision,
+        idempotencyKey: payload.idempotencyKey,
+        note: String(payload.note || `Reclaimed from ${previousRunId}.`).trim(),
+      }, { allowForce: true });
+      return { action, ...result };
+    }
 
-  const { items, index, currentItem, now } = await readObservedRecoveryItem(key, { ...payload, action });
-  const at = now.toISOString();
-  const note = String(payload.note || "").trim();
-  const actor = recoveryActor(payload, authenticatedActor);
+    const { items, index, currentItem, now } = await readObservedRecoveryItem(key, { ...payload, action });
+    const at = now.toISOString();
+    const note = String(payload.note || "").trim();
+    const actor = recoveryActor(payload, authenticatedActor);
 
-  if (action === "extend") {
-    const leaseMinutes = normalizeLeaseMinutes(payload.leaseMinutes || AGENT_RUN_EXTEND_LEASE_MINUTES);
-    const currentExpiry = Date.parse(currentItem.leaseExpiresAt || "");
-    const extendedFrom = Number.isFinite(currentExpiry) && currentExpiry > now.getTime() ? currentExpiry : now.getTime();
-    const leaseExpiresAt = new Date(extendedFrom + leaseMinutes * 60_000).toISOString();
-    const recoveryNote = note || `Extended the lease by ${leaseMinutes} minutes.`;
+    if (action === "extend") {
+      const leaseMinutes = normalizeLeaseMinutes(payload.leaseMinutes || AGENT_RUN_EXTEND_LEASE_MINUTES);
+      const currentExpiry = Date.parse(currentItem.leaseExpiresAt || "");
+      const extendedFrom = Number.isFinite(currentExpiry) && currentExpiry > now.getTime() ? currentExpiry : now.getTime();
+      const leaseExpiresAt = new Date(extendedFrom + leaseMinutes * 60_000).toISOString();
+      const recoveryNote = note || `Extended the lease by ${leaseMinutes} minutes.`;
+      const event = {
+        type: "recovery",
+        action,
+        at,
+        agent: actor,
+        agentRunId: currentItem.agentRunId || "",
+        leaseExpiresAt,
+        note: recoveryNote,
+      };
+      const nextItem = {
+        ...currentItem,
+        leaseExpiresAt,
+        lastAgentUpdate: {
+          at,
+          agent: actor,
+          status: currentItem.status,
+          note: recoveryNote,
+          agentRunId: currentItem.agentRunId || "",
+        },
+        agentEvents: appendAgentEvent(currentItem, event),
+        updatedAt: at,
+      };
+      return {
+        action,
+        ...await commitWorkItemMutation(items, index, nextItem, {
+          expectedRevision: payload.expectedRevision,
+          idempotencyKey: payload.idempotencyKey,
+        }),
+      };
+    }
+
+    const previousRunId = currentItem.agentRunId || "";
+    const recoveryNote = note || `Released ${previousRunId || "incomplete agent run"}.`;
     const event = {
       type: "recovery",
       action,
       at,
       agent: actor,
-      agentRunId: currentItem.agentRunId || "",
-      leaseExpiresAt,
+      agentRunId: previousRunId,
       note: recoveryNote,
     };
     const nextItem = {
       ...currentItem,
-      leaseExpiresAt,
+      status: "ready_for_agent",
+      claimedBy: "",
+      claimedAt: "",
+      agentRunId: "",
+      leaseExpiresAt: "",
+      blockedBy: "",
       lastAgentUpdate: {
         at,
         agent: actor,
-        status: currentItem.status,
+        status: "ready_for_agent",
         note: recoveryNote,
-        agentRunId: currentItem.agentRunId || "",
+        agentRunId: previousRunId,
       },
       agentEvents: appendAgentEvent(currentItem, event),
+      ...emptyCompletionState(),
       updatedAt: at,
     };
-    const nextItems = [...items];
-    nextItems[index] = nextItem;
-    await writeWorkItems(nextItems);
-
     return {
       action,
-      workItem: publicWorkItem(nextItem),
-      workItems: publicWorkItems(nextItems),
+      ...await commitWorkItemMutation(items, index, nextItem, {
+        expectedRevision: payload.expectedRevision,
+        idempotencyKey: payload.idempotencyKey,
+      }),
     };
-  }
-
-  const previousRunId = currentItem.agentRunId || "";
-  const recoveryNote = note || `Released ${previousRunId || "incomplete agent run"}.`;
-  const event = {
-    type: "recovery",
-    action,
-    at,
-    agent: actor,
-    agentRunId: previousRunId,
-    note: recoveryNote,
-  };
-  const nextItem = {
-    ...currentItem,
-    status: "ready_for_agent",
-    claimedBy: "",
-    claimedAt: "",
-    agentRunId: "",
-    leaseExpiresAt: "",
-    blockedBy: "",
-    lastAgentUpdate: {
-      at,
-      agent: actor,
-      status: "ready_for_agent",
-      note: recoveryNote,
-      agentRunId: previousRunId,
-    },
-    agentEvents: appendAgentEvent(currentItem, event),
-    ...emptyCompletionState(),
-    updatedAt: at,
-  };
-  const nextItems = [...items];
-  nextItems[index] = nextItem;
-  await writeWorkItems(nextItems);
-
-  return {
-    action,
-    workItem: publicWorkItem(nextItem),
-    workItems: publicWorkItems(nextItems),
-  };
+  });
 }
 
-export async function updateTaskStatus(key, payload = {}, options = {}) {
+async function updateTaskStatusUnlocked(key, payload = {}, options = {}) {
   const status = String(payload.status || "").trim();
 
   if (!allowedStatuses.has(status)) {
@@ -745,17 +855,17 @@ export async function updateTaskStatus(key, payload = {}, options = {}) {
     agentEvents: appendAgentEvent(currentItem, event),
     updatedAt: now,
   };
-  const nextItems = [...items];
-  nextItems[index] = nextItem;
-  await writeWorkItems(nextItems);
-
-  return {
-    workItem: publicWorkItem(nextItem),
-    workItems: publicWorkItems(nextItems),
-  };
+  return commitWorkItemMutation(items, index, nextItem, {
+    expectedRevision: options.expectedRevision ?? payload.expectedRevision,
+    idempotencyKey: options.idempotencyKey || payload.idempotencyKey,
+  });
 }
 
-export async function applyGithubMatches(key, matches = {}) {
+export async function updateTaskStatus(key, payload = {}, options = {}) {
+  return serializeWorkItemMutation(() => updateTaskStatusUnlocked(key, payload, options));
+}
+
+async function applyGithubMatchesUnlocked(key, matches = {}) {
   const items = await readWorkItems();
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
@@ -782,17 +892,17 @@ export async function applyGithubMatches(key, matches = {}) {
     },
     updatedAt: now,
   };
-  const nextItems = [...items];
-  nextItems[index] = nextItem;
-  await writeWorkItems(nextItems);
-
-  return {
-    workItem: publicWorkItem(nextItem),
-    workItems: publicWorkItems(nextItems),
-  };
+  return commitWorkItemMutation(items, index, nextItem, {
+    expectedRevision: matches.expectedRevision,
+    idempotencyKey: matches.idempotencyKey,
+  });
 }
 
-export async function recordGithubIssue(key, issue = {}) {
+export async function applyGithubMatches(key, matches = {}) {
+  return serializeWorkItemMutation(() => applyGithubMatchesUnlocked(key, matches));
+}
+
+async function recordGithubIssueUnlocked(key, issue = {}) {
   const items = await readWorkItems();
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
@@ -819,17 +929,17 @@ export async function recordGithubIssue(key, issue = {}) {
     },
     updatedAt: now,
   };
-  const nextItems = [...items];
-  nextItems[index] = nextItem;
-  await writeWorkItems(nextItems);
-
-  return {
-    workItem: publicWorkItem(nextItem),
-    workItems: publicWorkItems(nextItems),
-  };
+  return commitWorkItemMutation(items, index, nextItem, {
+    expectedRevision: issue.expectedRevision,
+    idempotencyKey: issue.idempotencyKey || (issueUrl ? `github-issue:${issueUrl}` : ""),
+  });
 }
 
-export async function importGithubIssues(githubCache, { repo: repoFilter = "", limit = 12 } = {}) {
+export async function recordGithubIssue(key, issue = {}) {
+  return serializeWorkItemMutation(() => recordGithubIssueUnlocked(key, issue));
+}
+
+async function importGithubIssuesUnlocked(githubCache, { repo: repoFilter = "", limit = 12 } = {}) {
   const items = await readWorkItems();
   const existingIssueUrls = new Set(
     items.flatMap((item) => [item.githubIssueUrl, ...(Array.isArray(item.relevantUrls) ? item.relevantUrls : [])]).filter(Boolean),
@@ -838,7 +948,6 @@ export async function importGithubIssues(githubCache, { repo: repoFilter = "", l
   const imported = [];
   const skipped = [];
   const maxImports = Math.min(Math.max(Number(limit) || 12, 1), 50);
-  let nextItems = [...items];
 
   for (const repo of githubCache?.repos || []) {
     if (repoFilter && repo.id !== repoFilter && repo.name !== repoFilter && repo.slug !== repoFilter) {
@@ -855,18 +964,14 @@ export async function importGithubIssues(githubCache, { repo: repoFilter = "", l
         continue;
       }
 
-      const key = nextKey(nextItems);
       const title = String(issue.title || `GitHub issue #${issue.number}`).trim();
-      const workItem = {
-        id: `w-${key.toLowerCase()}`,
-        key,
+      const result = await createWorkItemUnlocked({
         title,
         status: "draft",
         priority: "medium",
         project: repo.domain || repo.name || "GitHub import",
         repo: repo.id || repo.name || "",
         labels: splitLabels([...(issue.labels || []), "github-sync"]),
-        suggestedBranch: `codex/${key.toLowerCase()}-${slugify(title)}`,
         summary: `Imported from GitHub issue #${issue.number || "unknown"} in ${repo.slug || repo.name}.`,
         desiredOutcome: "Triage this GitHub issue and turn it into an agent-ready work packet.",
         acceptanceCriteria: [
@@ -904,24 +1009,19 @@ export async function importGithubIssues(githubCache, { repo: repoFilter = "", l
           source: githubCache?.source || "github-cache",
           matchCount: 1,
         },
-        agent: "",
-        claimedBy: "",
-        claimedAt: "",
-        agentRunId: "",
-        leaseExpiresAt: "",
-        agentEvents: [],
-        lastAgentUpdate: null,
-        completionEvidence: null,
-        completionOverride: null,
-        completedAt: "",
-        createdAt: now,
-        updatedAt: now,
-      };
+        idempotencyKey: `github-import:${issue.url}`,
+      });
+      const workItem = result.workItem;
 
-      nextItems = [workItem, ...nextItems];
+      if (result.idempotentReplay) {
+        skipped.push({ repo: repo.id, url: issue.url, reason: "already imported" });
+        existingIssueUrls.add(issue.url);
+        continue;
+      }
+
       existingIssueUrls.add(issue.url);
       imported.push({
-        key,
+        key: workItem.key,
         repo: workItem.repo,
         issueNumber: workItem.githubIssueNumber,
         issueUrl: workItem.githubIssueUrl,
@@ -930,13 +1030,13 @@ export async function importGithubIssues(githubCache, { repo: repoFilter = "", l
     }
   }
 
-  if (imported.length > 0) {
-    await writeWorkItems(nextItems);
-  }
-
   return {
     imported,
     skipped,
-    workItems: publicWorkItems(nextItems),
+    workItems: await listWorkItems(),
   };
+}
+
+export async function importGithubIssues(githubCache, options = {}) {
+  return serializeWorkItemMutation(() => importGithubIssuesUnlocked(githubCache, options));
 }

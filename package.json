@@ -21,7 +21,8 @@
     "build": "vite build --config manage/vite.config.mjs",
     "start": "node manage/server.mjs",
     "preview": "vite preview --config manage/vite.config.mjs --host 127.0.0.1",
-    "test": "playwright test --config manage/playwright.config.mjs",
+    "test": "playwright test --config manage/playwright.config.mjs --grep-invert @a11y",
+    "test:a11y": "playwright test --config manage/playwright.config.mjs --grep @a11y",
     "test:unit": "vitest run --config manage/vitest.config.mjs",
     "smoke": "node scripts/smoke.mjs",
     "agent": "node scripts/manage-agent.mjs",
@@ -29,10 +30,12 @@
     "manage:build": "vite build --config manage/vite.config.mjs",
     "manage:serve": "node manage/server.mjs",
     "manage:preview": "vite preview --config manage/vite.config.mjs --host 127.0.0.1",
-    "manage:test": "playwright test --config manage/playwright.config.mjs",
+    "manage:test": "playwright test --config manage/playwright.config.mjs --grep-invert @a11y",
+    "manage:test:a11y": "playwright test --config manage/playwright.config.mjs --grep @a11y",
     "manage:agent": "node scripts/manage-agent.mjs"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@playwright/test": "^1.60.0",
     "@vitejs/plugin-react": "^4.3.4",
     "react": "^18.3.1",

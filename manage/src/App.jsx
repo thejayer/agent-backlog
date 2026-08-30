@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildAgentClaimCommand,
   buildAgentClaimPowerShellCommand,
@@ -16,7 +16,7 @@ import {
   findNextWorkItem,
   readinessScore,
 } from "./lib/agentPrompt.mjs";
-import { labelOptions, priorityOptions, repositories, statusOptions, workItems as seedWorkItems } from "./data/workItems.mjs";
+import { priorityOptions, repositories, statusOptions, workItems as seedWorkItems } from "./data/workItems.mjs";
 import {
   MIN_COMPLETION_OVERRIDE_REASON_LENGTH,
   reviewCompletionEvidence,
@@ -68,61 +68,15 @@ import {
   savedBacklogState,
   viewStateFromSavedBacklog,
 } from "./lib/manageViewState.mjs";
-
-const navItems = [
-  { id: "today", label: "Today", icon: "dashboard" },
-  { id: "backlog", label: "Backlog", icon: "queue" },
-  { id: "initiatives", label: "Initiatives", icon: "initiative" },
-  { id: "shipped", label: "Shipped", icon: "calendar" },
-  { id: "repos", label: "Repos", icon: "repo" },
-  { id: "agents", label: "Agents", icon: "agent" },
-  { id: "review", label: "Review", icon: "review" },
-];
-
-const viewCopy = {
-  today: {
-    eyebrow: "Console",
-    title: "Today",
-    description: "Packets and exceptions that need a human now, ranked for action.",
-  },
-  backlog: {
-    eyebrow: "Workspace",
-    title: "AI-ready backlog",
-    description: "Create work packets that coding agents can pick up without another context handoff.",
-  },
-  initiatives: {
-    eyebrow: "Workspace",
-    title: "Initiatives",
-    description: "Connect related packets to an outcome, owner, health signal, and release timeline.",
-  },
-  shipped: {
-    eyebrow: "Progress",
-    title: "Shipped work",
-    description: "See completed packets and merged pull requests by day, then drill into what shipped.",
-  },
-  repos: {
-    eyebrow: "Operations",
-    title: "Repository health",
-    description: "Review GitHub sync state, unmatched merged pull requests, and backlog snapshots across the app family.",
-  },
-  agents: {
-    eyebrow: "Operations",
-    title: "Agent activity",
-    description: "Track active claims, leases, and recent handoffs before starting more work.",
-  },
-  review: {
-    eyebrow: "Workspace",
-    title: "Review queue",
-    description: "Inspect packets that agents have written back for reviewer sign-off.",
-  },
-};
-
-const themeOptions = ["light", "dark"];
-const densityOptions = [
-  { id: "compact", label: "Compact" },
-  { id: "regular", label: "Regular" },
-  { id: "comfortable", label: "Comfortable" },
-];
+import { ManageShell, densityOptions, themeOptions } from "./components/ManageShell.jsx";
+import { ModalDialog } from "./components/ModalDialog.jsx";
+import { useManageNavigation } from "./components/useManageNavigation.mjs";
+import { BacklogRoute } from "./features/backlog/BacklogRoute.jsx";
+import {
+  itemLabels,
+  normalizeLabel,
+  useBacklogController,
+} from "./features/backlog/useBacklogController.mjs";
 
 function readShellPreference(key, fallback, allowedValues) {
   if (typeof window === "undefined") {
@@ -280,26 +234,8 @@ function formatPriority(priorityId) {
   return priorityOptions.find((priority) => priority.id === priorityId)?.label || priorityId;
 }
 
-function normalizeLabel(value) {
-  return String(value || "")
-    .trim()
-    .replace(/^#/, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
-function itemLabels(item) {
-  const labels = Array.isArray(item?.labels) ? item.labels : String(item?.labels || "").split(/[,\n]/);
-  return [...new Set(labels.map(normalizeLabel).filter(Boolean))];
-}
-
 function labelsToText(value) {
   return itemLabels({ labels: value }).join(", ");
-}
-
-function formatLabel(labelId) {
-  return labelOptions.find((label) => label.id === labelId)?.label || labelId;
 }
 
 function getStatusTone(statusId) {
@@ -773,15 +709,9 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
   const initialView = readInitialViewState();
   const historyIntentRef = useRef("replace");
   const skipUrlWriteRef = useRef(false);
-  const [activeNav, setActiveNav] = useState(initialView.activeNav);
   const [items, setItems] = useState(seedWorkItems);
   const [initiatives, setInitiatives] = useState([]);
   const [selectedInitiativeId, setSelectedInitiativeId] = useState("");
-  const [selectedKey, setSelectedKey] = useState(initialView.selectedKey || "TASK-101");
-  const [repoFilter, setRepoFilter] = useState(initialView.repoFilter);
-  const [statusFilter, setStatusFilter] = useState(initialView.statusFilter);
-  const [labelFilter, setLabelFilter] = useState(initialView.labelFilter);
-  const [query, setQuery] = useState(initialView.query);
   const [savedViews, setSavedViews] = useState([]);
   const [savedViewWarnings, setSavedViewWarnings] = useState([]);
   const [savedViewState, setSavedViewState] = useState("idle");
@@ -789,6 +719,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
   const [appliedSavedViewId, setAppliedSavedViewId] = useState("");
   const [showComposer, setShowComposer] = useState(false);
   const [showInitiativeComposer, setShowInitiativeComposer] = useState(false);
+  const [destructiveAction, setDestructiveAction] = useState(null);
   const [copyState, setCopyState] = useState("idle");
   const [copyMessage, setCopyMessage] = useState("");
   const [loadState, setLoadState] = useState("loading");
@@ -826,6 +757,38 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
       densityOptions.map((option) => option.id),
     ),
   );
+
+  const onHistoryIntent = useCallback((intent = "replace") => {
+    if (intent && intent !== "silent" && intent !== "none") {
+      historyIntentRef.current = intent === "push" ? "push" : "replace";
+    }
+  }, []);
+
+  const backlog = useBacklogController(items, {
+    initialState: initialView,
+    hydrated: loadState === "ready",
+    onHistoryIntent,
+  });
+  const { activeNav, selectNav, openPacket, openReviewPacket, applyNavigationState } = useManageNavigation({
+    items,
+    setSelectedKey: backlog.setSelectedKey,
+    setRepoFilter: backlog.setRepoFilter,
+    setStatusFilter: backlog.setStatusFilter,
+    setLabelFilter: backlog.setLabelFilter,
+    setQuery: backlog.setQuery,
+    initialState: initialView,
+    onHistoryIntent,
+  });
+  const {
+    selectedKey,
+    setSelectedKey,
+    repoFilter,
+    statusFilter,
+    labelFilter,
+    query,
+    selectedItem,
+    applyBacklogState,
+  } = backlog;
 
   useEffect(() => {
     let canceled = false;
@@ -906,13 +869,6 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     writeShellPreference("manage-density", densityMode);
   }, [densityMode]);
 
-  useEffect(() => {
-    if (items.length > 0 && !items.some((item) => item.key === selectedKey)) {
-      historyIntentRef.current = "replace";
-      setSelectedKey(items[0].key);
-    }
-  }, [items, selectedKey]);
-
   const viewState = useMemo(
     () => ({
       activeNav,
@@ -951,14 +907,11 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     function onPopState() {
       const next = parseManageViewState(window.location.search);
       skipUrlWriteRef.current = true;
-      setActiveNav(next.activeNav);
-      setRepoFilter(next.repoFilter);
-      setStatusFilter(next.statusFilter);
-      setLabelFilter(next.labelFilter);
-      setQuery(next.query);
-      if (next.selectedKey) {
-        setSelectedKey(next.selectedKey);
-      }
+      applyNavigationState(next.activeNav, { history: "silent" });
+      applyBacklogState({
+        ...next,
+        selectedKey: next.selectedKey || undefined,
+      }, { history: "silent" });
     }
 
     window.addEventListener("popstate", onPopState);
@@ -998,49 +951,6 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     };
   }, [sessionUser?.role]);
 
-  const filteredItems = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-
-    return items
-      .filter((item) => (repoFilter === "all" ? true : item.repo === repoFilter))
-      .filter((item) => (statusFilter === "all" ? true : item.status === statusFilter))
-      .filter((item) => (labelFilter === "all" ? true : itemLabels(item).includes(labelFilter)))
-      .filter((item) => {
-        if (!normalizedQuery) {
-          return true;
-        }
-
-        return `${item.key} ${item.title} ${item.project} ${item.repo} ${item.summary} ${itemLabels(item).join(" ")}`
-          .toLowerCase()
-          .includes(normalizedQuery);
-      })
-      .sort((a, b) => {
-        const priorityA = priorityOptions.find((priority) => priority.id === a.priority)?.rank || 99;
-        const priorityB = priorityOptions.find((priority) => priority.id === b.priority)?.rank || 99;
-
-        if (priorityA !== priorityB) {
-          return priorityA - priorityB;
-        }
-
-        return readinessScore(b) - readinessScore(a);
-      });
-  }, [items, query, repoFilter, statusFilter, labelFilter]);
-
-  const availableLabels = useMemo(() => {
-    const labels = new Set(labelOptions.map((label) => label.id));
-
-    for (const item of items) {
-      for (const label of itemLabels(item)) {
-        labels.add(label);
-      }
-    }
-
-    return [...labels].sort((a, b) => formatLabel(a).localeCompare(formatLabel(b)));
-  }, [items]);
-
-  const selectedItem = useMemo(() => {
-    return items.find((item) => item.key === selectedKey) || filteredItems[0] || items[0];
-  }, [filteredItems, items, selectedKey]);
   const selectedRepository = useMemo(() => getRepo(selectedItem.repo), [selectedItem.repo]);
   const selectedRepoSlug = useMemo(
     () => `${selectedRepository?.owner || "your-org"}/${selectedRepository?.name || selectedItem.repo || "repo"}`,
@@ -1223,93 +1133,12 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
   );
   const recentAgentActivity = useMemo(() => buildActivityFeed(items, 5), [items]);
   const miniRepoHealth = useMemo(() => buildMiniRepoHealth(githubCache), [githubCache]);
-  const currentView = viewCopy[activeNav] || viewCopy.backlog;
   const showWorkbench = activeNav === "backlog";
   const reviewItems = useMemo(() => items.filter((item) => item.status === "needs_review"), [items]);
-  const nextThemeMode = themeMode === "dark" ? "light" : "dark";
-
-  function queueHistory(intent = "push") {
-    historyIntentRef.current = intent;
-  }
 
   function applyViewState(next, { history = "replace" } = {}) {
-    queueHistory(history);
-    setActiveNav(next.activeNav);
-    setRepoFilter(next.repoFilter);
-    setStatusFilter(next.statusFilter);
-    setLabelFilter(next.labelFilter);
-    setQuery(next.query);
-    if (next.selectedKey) {
-      setSelectedKey(next.selectedKey);
-    }
-  }
-
-  function changeRepoFilter(value) {
-    queueHistory("push");
-    setRepoFilter(value);
-  }
-
-  function changeStatusFilter(value) {
-    queueHistory("push");
-    setStatusFilter(value);
-  }
-
-  function changeLabelFilter(value) {
-    queueHistory("push");
-    setLabelFilter(value);
-  }
-
-  function changeQuery(value) {
-    queueHistory("replace");
-    setQuery(value);
-  }
-
-  function changeSelectedKey(value) {
-    queueHistory("push");
-    setSelectedKey(value);
-  }
-
-  function selectNav(navId) {
-    queueHistory("push");
-    setActiveNav(navId);
-
-    if (navId === "review") {
-      setStatusFilter("needs_review");
-      setRepoFilter("all");
-      setLabelFilter("all");
-      const firstReviewItem = items.find((item) => item.status === "needs_review");
-
-      if (firstReviewItem) {
-        setSelectedKey(firstReviewItem.key);
-      }
-    }
-
-    if (navId === "backlog") {
-      setStatusFilter("all");
-      setLabelFilter("all");
-    }
-  }
-
-  function openPacket(key) {
-    if (!key) {
-      return;
-    }
-
-    queueHistory("push");
-    setSelectedKey(key);
-    setActiveNav("backlog");
-  }
-
-  function openReviewPacket(key) {
-    queueHistory("push");
-    if (key) {
-      setSelectedKey(key);
-    }
-
-    setStatusFilter("needs_review");
-    setRepoFilter("all");
-    setLabelFilter("all");
-    setActiveNav("review");
+    applyNavigationState(next.activeNav, { history: "silent" });
+    applyBacklogState(next, { history });
   }
 
   const canManageSavedViews = ["admin", "operator"].includes(sessionUser?.role);
@@ -1793,9 +1622,11 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
       setShowComposer(false);
       setSyncState("synced");
       setSyncMessage("Store synced");
+      return true;
     } catch (error) {
       setSyncState("failed");
       setSyncMessage(error.message);
+      return false;
     }
   }
 
@@ -1872,29 +1703,34 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
     }
   }
 
-  async function resetStore() {
+  function requestResetStore() {
+    setDestructiveAction({
+      id: "reset-store",
+      title: "Reset backlog store",
+      description: "This restores the seed demo packets and clears operator-created work.",
+      confirmation: "RESET MANAGE",
+      actionLabel: "Reset store",
+    });
+  }
+
+  async function confirmDestructiveAction(confirmation) {
     setSyncState("saving");
     setSyncMessage("Resetting store");
 
     try {
-      const confirmation = window.prompt("Type RESET MANAGE to restore the seed backlog.");
-
-      if (confirmation === null) {
-        setSyncState("idle");
-        setSyncMessage("Reset cancelled");
-        return;
-      }
-
       const payload = await resetWorkItemsRequest(confirmation);
       setItems(payload.workItems);
       setInitiatives(payload.initiatives || []);
       setSelectedInitiativeId("");
       setSelectedKey("TASK-101");
+      setDestructiveAction(null);
       setSyncState("synced");
       setSyncMessage("Seed backlog restored");
+      return true;
     } catch (error) {
       setSyncState("failed");
       setSyncMessage(error.message);
+      return false;
     }
   }
 
@@ -2020,101 +1856,41 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
   }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-block">
-          <div className="brand-mark">A</div>
-          <div>
-            <div className="brand-name">Agent Backlog</div>
-            <div className="brand-domain">localhost:5186</div>
-          </div>
-        </div>
-
-        <nav className="side-nav" aria-label="Main navigation">
-          {navItems.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className={`nav-button ${activeNav === item.id ? "is-active" : ""}`}
-              aria-label={item.label}
-              onClick={() => selectNav(item.id)}
-            >
-              <Icon name={item.icon} />
-              <span>{item.label}</span>
-              {navCounts[item.id] ? <span className="nav-count">{navCounts[item.id]}</span> : null}
-            </button>
-          ))}
-        </nav>
-
-        <div className="sidebar-footer">
-          <div className="footer-label">Next ready packet</div>
-          <button type="button" className="next-packet" onClick={() => openPacket(nextItem?.key)} disabled={!nextItem}>
-            <span>{nextItem?.key || "None"}</span>
-            <small>{nextItem ? `${nextItem.repo} / ${nextItem.title}` : "No ready item"}</small>
-          </button>
-        </div>
-      </aside>
-
-      <main className="workspace">
-        <header className="topbar">
-          <div>
-            <span className="eyebrow">{currentView.eyebrow}</span>
-            <h1>{currentView.title}</h1>
-            <p>{currentView.description}</p>
-          </div>
-          <div className="topbar-actions">
-            <button
-              type="button"
-              className="button primary"
-              onClick={() => (activeNav === "initiatives" ? setShowInitiativeComposer(true) : setShowComposer(true))}
-            >
-              <Icon name="plus" />
-              {activeNav === "initiatives" ? "New initiative" : "New packet"}
-            </button>
-            <div className="topbar-secondary-actions">
-              <label className="shell-control">
-                <span>Density</span>
-                <select
-                  aria-label="Density"
-                  value={densityMode}
-                  onChange={(event) => setDensityMode(event.target.value)}
-                >
-                  {densityOptions.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                className="button secondary shell-toggle"
-                onClick={() => setThemeMode(nextThemeMode)}
-                aria-label={`Switch to ${nextThemeMode} theme`}
-              >
-                <Icon name={themeMode === "dark" ? "sun" : "moon"} />
-                {themeMode === "dark" ? "Light" : "Dark"}
-              </button>
-              <div className="session-chip" title={sessionUser?.login || sessionMode}>
-                {sessionMode === "github" ? `GitHub: ${sessionUser?.login || "signed in"}` : "Token session"}
-              </div>
-              <div className={`sync-chip sync-${syncState}`} title={syncMessage}>
-                {loadState === "loading" ? "Loading store" : syncMessage}
-              </div>
-              <button
-                type="button"
-                className="button secondary"
-                onClick={resetStore}
-              >
-                Reset store
-              </button>
-              <button type="button" className="button secondary" onClick={onLogout}>
-                Sign out
-              </button>
-            </div>
-          </div>
-        </header>
-
+    <ManageShell
+      activeNav={activeNav}
+      navCounts={navCounts}
+      nextItem={nextItem}
+      densityMode={densityMode}
+      themeMode={themeMode}
+      sessionMode={sessionMode}
+      sessionUser={sessionUser}
+      syncState={syncState}
+      syncMessage={syncMessage}
+      loadState={loadState}
+      onNavigate={selectNav}
+      onOpenPacket={openPacket}
+      onCreate={() => (activeNav === "initiatives" ? setShowInitiativeComposer(true) : setShowComposer(true))}
+      onDensityModeChange={setDensityMode}
+      onThemeModeChange={setThemeMode}
+      onReset={requestResetStore}
+      onLogout={onLogout}
+      IconComponent={Icon}
+      overlays={(
+        <>
+          {showComposer ? <Composer onClose={() => setShowComposer(false)} onCreate={createWorkItem} /> : null}
+          {showInitiativeComposer ? (
+            <InitiativeComposer onClose={() => setShowInitiativeComposer(false)} onCreate={createInitiative} items={items} />
+          ) : null}
+          {destructiveAction ? (
+            <DestructiveActionDialog
+              action={destructiveAction}
+              onClose={() => setDestructiveAction(null)}
+              onConfirm={confirmDestructiveAction}
+            />
+          ) : null}
+        </>
+      )}
+    >
         {activeNav === "today" ? (
           <TodayOverview
             stats={stats}
@@ -2154,113 +1930,35 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
               onRefresh={refreshSystemStatus}
             />
 
-            <section className="content-grid">
-          <section className="backlog-panel" aria-label="Backlog">
-            <div className="panel-header">
-              <div>
-                <h2>Backlog</h2>
-                <p>{filteredItems.length} work packets across {repositories.length} repos</p>
-              </div>
-              <div className="filters">
-                <label>
-                  <span>Repo</span>
-                  <select aria-label="Repo" value={repoFilter} onChange={(event) => changeRepoFilter(event.target.value)}>
-                    <option value="all">All repos</option>
-                    {repoOptions.map((repo) => (
-                      <option key={repo} value={repo}>
-                        {repo}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Status</span>
-                  <select aria-label="Status" value={statusFilter} onChange={(event) => changeStatusFilter(event.target.value)}>
-                    <option value="all">All statuses</option>
-                    {statusOptions.map((status) => (
-                      <option key={status.id} value={status.id}>
-                        {status.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Label</span>
-                  <select aria-label="Label" value={labelFilter} onChange={(event) => changeLabelFilter(event.target.value)}>
-                    <option value="all">All labels</option>
-                    {availableLabels.map((label) => (
-                      <option key={label} value={label}>
-                        {formatLabel(label)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </div>
-
-            {canManageSavedViews ? (
-              <SavedViewControls
-                savedViews={savedViews}
-                activeId={activeSavedViewId}
-                updateTargetId={updateTargetId}
-                state={savedViewState}
-                message={[savedViewMessage, ...savedViewWarnings].filter(Boolean).join(" ")}
-                onApply={applySavedView}
-                onCreate={handleCreateSavedView}
-                onUpdate={handleUpdateSavedView}
-                onRename={handleRenameSavedView}
-                onDelete={handleDeleteSavedView}
-                onRetry={() => {
-                  setSavedViewState("loading");
-                  fetchSavedViews()
-                    .then((payload) => refreshSavedViews(payload.savedViews || [], payload.warnings || []))
-                    .catch((error) => {
-                      setSavedViewState("failed");
-                      setSavedViewMessage(error.message);
-                    });
-                }}
-              />
-            ) : null}
-
-            <label className="search-box">
-              <Icon name="search" />
-              <input
-                aria-label="Search packets"
-                value={query}
-                onChange={(event) => changeQuery(event.target.value)}
-                placeholder="Search packets, labels, projects, repos..."
-              />
-            </label>
-
-            <div className="work-list">
-              {filteredItems.map((item) => (
-                <button
-                  type="button"
-                  key={item.key}
-                  className={`work-row ${selectedItem.key === item.key ? "is-selected" : ""}`}
-                  onClick={() => changeSelectedKey(item.key)}
-                >
-                  <div className="row-main">
-                    <div className="row-title">
-                      <span className="work-key">{item.key}</span>
-                      <span className="row-title-text">{item.title}</span>
-                    </div>
-                    <div className="row-meta">
-                      <PriorityFlag priority={item.priority} />
-                      <span>{item.repo}</span>
-                      <span>{formatRelativeTime(item.updatedAt)}</span>
-                    </div>
-                    <LabelList labels={itemLabels(item)} compact />
-                  </div>
-                  <div className="row-side">
-                    <StatusPill status={item.status} />
-                    <Readiness value={readinessScore(item)} />
-                  </div>
-                </button>
-              ))}
-            </div>
-          </section>
-
+            <BacklogRoute
+              items={items}
+              controller={backlog}
+              IconComponent={Icon}
+              formatRelativeTime={formatRelativeTime}
+              savedViewControls={canManageSavedViews ? (
+                <SavedViewControls
+                  savedViews={savedViews}
+                  activeId={activeSavedViewId}
+                  updateTargetId={updateTargetId}
+                  state={savedViewState}
+                  message={[savedViewMessage, ...savedViewWarnings].filter(Boolean).join(" ")}
+                  onApply={applySavedView}
+                  onCreate={handleCreateSavedView}
+                  onUpdate={handleUpdateSavedView}
+                  onRename={handleRenameSavedView}
+                  onDelete={handleDeleteSavedView}
+                  onRetry={() => {
+                    setSavedViewState("loading");
+                    fetchSavedViews()
+                      .then((payload) => refreshSavedViews(payload.savedViews || [], payload.warnings || []))
+                      .catch((error) => {
+                        setSavedViewState("failed");
+                        setSavedViewMessage(error.message);
+                      });
+                  }}
+                />
+              ) : null}
+              detail={(
           <section className="detail-panel" aria-label="Selected work packet">
             <WorkPacketDetail
               item={selectedItem}
@@ -2276,7 +1974,8 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
               githubState={githubState}
             />
           </section>
-
+              )}
+              agent={(
           <aside className="agent-panel" aria-label="Agent prompt">
             <div className="agent-header">
               <div>
@@ -2453,7 +2152,8 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
               <Endpoint label="Recovery" value={`POST /api/agent/tasks/${selectedItem.key}/recovery`} />
             </div>
           </aside>
-        </section>
+              )}
+            />
           </>
         ) : null}
 
@@ -2538,13 +2238,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
         {activeNav === "agents" ? (
           <AgentsOverview items={items} activeClaims={activeClaims} onOpenPacket={openPacket} onRecoverRun={recoverRun} />
         ) : null}
-      </main>
-
-      {showComposer && <Composer onClose={() => setShowComposer(false)} onCreate={createWorkItem} />}
-      {showInitiativeComposer && (
-        <InitiativeComposer onClose={() => setShowInitiativeComposer(false)} onCreate={createInitiative} items={items} />
-      )}
-    </div>
+    </ManageShell>
   );
 }
 
@@ -2842,29 +2536,16 @@ function InitiativeComposer({ onClose, onCreate, items }) {
   }
 
   return (
-    <div
-      className="modal-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          requestClose();
-        }
-      }}
+    <ModalDialog
+      as="form"
+      className="composer initiative-composer"
+      labelledBy={titleId}
+      describedBy={`${descriptionId}${error ? " initiative-composer-error" : ""}`}
+      initialFocusSelector="[aria-label='Initiative template']"
+      onClose={requestClose}
+      preventDismiss={submitting}
+      onSubmit={submit}
     >
-      <form
-        className="composer initiative-composer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={`${descriptionId}${error ? " initiative-composer-error" : ""}`}
-        onSubmit={submit}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            requestClose();
-          }
-        }}
-      >
         <div className="composer-header">
           <div>
             <span className="eyebrow">Portfolio · {stage === "source" ? "1 of 2" : "2 of 2"}</span>
@@ -2910,8 +2591,7 @@ function InitiativeComposer({ onClose, onCreate, items }) {
           <button type="button" className="button secondary" onClick={requestClose} disabled={submitting}>Cancel</button>
           <button type="submit" className="button primary" disabled={submitting}>{stage === "source" ? "Review initiative" : submitting ? "Creating initiative" : "Confirm and create"}</button>
         </div>
-      </form>
-    </div>
+    </ModalDialog>
   );
 }
 
@@ -4983,12 +4663,19 @@ function SavedViewControls({
       </div>
 
       {editorMode ? (
-        <div className="modal-backdrop" role="presentation">
-          <form className="saved-view-dialog" onSubmit={submitEditor}>
+        <ModalDialog
+          as="form"
+          className="saved-view-dialog"
+          labelledBy="saved-view-editor-title"
+          initialFocusSelector="[data-saved-view-name]"
+          onClose={() => setEditorMode("")}
+          preventDismiss={busy}
+          onSubmit={submitEditor}
+        >
             <div className="composer-header">
               <div>
                 <span className="eyebrow">Backlog filters</span>
-                <h2>{editorMode === "rename" ? "Rename saved view" : "Save current view"}</h2>
+                <h2 id="saved-view-editor-title">{editorMode === "rename" ? "Rename saved view" : "Save current view"}</h2>
               </div>
               <button type="button" className="icon-button" aria-label="Close saved view editor" onClick={() => setEditorMode("")} disabled={busy}>
                 <Icon name="close" />
@@ -5008,17 +4695,20 @@ function SavedViewControls({
               <button type="button" className="button secondary" onClick={() => setEditorMode("")} disabled={busy}>Cancel</button>
               <button type="submit" className="button primary" disabled={busy || !name.trim()}>{busy ? "Saving" : "Save"}</button>
             </div>
-          </form>
-        </div>
+        </ModalDialog>
       ) : null}
 
       {deleteTarget ? (
-        <div className="modal-backdrop" role="presentation">
-          <div className="saved-view-dialog">
+        <ModalDialog
+          className="saved-view-dialog"
+          labelledBy="saved-view-delete-title"
+          onClose={() => setDeleteTarget(null)}
+          preventDismiss={busy}
+        >
             <div className="composer-header">
               <div>
                 <span className="eyebrow">Confirmation</span>
-                <h2>Delete saved view?</h2>
+                <h2 id="saved-view-delete-title">Delete saved view?</h2>
               </div>
             </div>
             <p>This removes “{deleteTarget.name}” from your saved views. Packet data is not changed.</p>
@@ -5028,8 +4718,7 @@ function SavedViewControls({
                 {busy ? "Deleting" : "Delete view"}
               </button>
             </div>
-          </div>
-        </div>
+        </ModalDialog>
       ) : null}
     </div>
   );
@@ -5107,6 +4796,8 @@ function Composer({ onClose, onCreate }) {
     deployNotes: "",
     ready: false,
   });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
 
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -5129,20 +4820,34 @@ function Composer({ onClose, onCreate }) {
     }));
   }
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
-    onCreate(form);
+    setSubmitting(true);
+    setError("");
+    const created = await onCreate(form);
+    if (!created) {
+      setError("The packet could not be created. Review the sync status and try again.");
+      setSubmitting(false);
+    }
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <form className="composer" onSubmit={submit}>
+    <ModalDialog
+      as="form"
+      className="composer"
+      labelledBy="packet-composer-title"
+      describedBy={`packet-composer-description${error ? " packet-composer-error" : ""}`}
+      initialFocusSelector="#packet-composer-title-input"
+      onClose={onClose}
+      preventDismiss={submitting}
+      onSubmit={submit}
+    >
         <div className="composer-header">
           <div>
-            <h2>New work packet</h2>
-            <p>Capture enough context for a coding agent to start cleanly.</p>
+            <h2 id="packet-composer-title">New work packet</h2>
+            <p id="packet-composer-description">Capture enough context for a coding agent to start cleanly.</p>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close" disabled={submitting}>
             <Icon name="close" />
           </button>
         </div>
@@ -5161,7 +4866,7 @@ function Composer({ onClose, onCreate }) {
           </label>
           <label className="span-2">
             <span>Title</span>
-            <input value={form.title} onChange={(event) => update("title", event.target.value)} required />
+            <input id="packet-composer-title-input" value={form.title} onChange={(event) => update("title", event.target.value)} required />
           </label>
           <label>
             <span>Repo</span>
@@ -5242,16 +4947,78 @@ function Composer({ onClose, onCreate }) {
           <span>Mark ready for agent</span>
         </label>
 
+        {error ? <div className="auth-error" id="packet-composer-error" role="alert">{error}</div> : null}
         <div className="composer-actions">
-          <button type="button" className="button secondary" onClick={onClose}>
+          <button type="button" className="button secondary" onClick={onClose} disabled={submitting}>
             Cancel
           </button>
-          <button type="submit" className="button primary">
-            Create packet
+          <button type="submit" className="button primary" disabled={submitting}>
+            {submitting ? "Creating packet" : "Create packet"}
           </button>
         </div>
-      </form>
-    </div>
+    </ModalDialog>
+  );
+}
+
+function DestructiveActionDialog({ action, onClose, onConfirm }) {
+  const [confirmation, setConfirmation] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const matches = confirmation === action.confirmation;
+
+  async function submit(event) {
+    event.preventDefault();
+    if (!matches) return;
+    setSubmitting(true);
+    setError("");
+    const completed = await onConfirm(confirmation);
+    if (!completed) {
+      setError("The store could not be reset. Review the sync status and try again.");
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <ModalDialog
+      as="form"
+      className="composer destructive-dialog"
+      labelledBy={`${action.id}-title`}
+      describedBy={`${action.id}-description`}
+      initialFocusSelector="[aria-label='Typed confirmation']"
+      onClose={onClose}
+      preventDismiss={submitting}
+      onSubmit={submit}
+    >
+      <div className="composer-header">
+        <div>
+          <span className="eyebrow">Destructive action</span>
+          <h2 id={`${action.id}-title`}>{action.title}</h2>
+          <p id={`${action.id}-description`}>{action.description}</p>
+        </div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Cancel destructive action" disabled={submitting}>
+          <Icon name="close" />
+        </button>
+      </div>
+      <label className="destructive-confirmation">
+        <span>Type <strong>{action.confirmation}</strong> to confirm</span>
+        <input
+          aria-label="Typed confirmation"
+          aria-describedby={`${action.id}-confirmation-help${error ? ` ${action.id}-error` : ""}`}
+          aria-invalid={Boolean(error)}
+          value={confirmation}
+          onChange={(event) => setConfirmation(event.target.value)}
+          autoComplete="off"
+        />
+      </label>
+      <span className="sr-only" id={`${action.id}-confirmation-help`}>Enter the exact confirmation phrase to enable this action.</span>
+      {error ? <div className="auth-error" id={`${action.id}-error`} role="alert">{error}</div> : null}
+      <div className="composer-actions">
+        <button type="button" className="button secondary" onClick={onClose} disabled={submitting}>Cancel</button>
+        <button type="submit" className="button danger" disabled={!matches || submitting}>
+          {submitting ? "Working" : action.actionLabel}
+        </button>
+      </div>
+    </ModalDialog>
   );
 }
 
@@ -5385,6 +5152,13 @@ function Icon({ name }) {
       <>
         <path d="M6 6l12 12" />
         <path d="M18 6 6 18" />
+      </>
+    ),
+    more: (
+      <>
+        <path d="M6 12h.01" />
+        <path d="M12 12h.01" />
+        <path d="M18 12h.01" />
       </>
     ),
   };

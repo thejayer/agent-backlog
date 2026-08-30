@@ -20,6 +20,18 @@ function deferred() {
   return { promise, resolve };
 }
 
+async function openOperatorControls(page) {
+  const settingsTrigger = page.getByRole("button", { name: "Settings" });
+  if (await settingsTrigger.isVisible()) {
+    await settingsTrigger.click();
+    return {
+      controls: page.getByRole("dialog", { name: "Operator settings" }),
+      returnFocus: settingsTrigger,
+    };
+  }
+  return { controls: page, returnFocus: null };
+}
+
 const manageAuthToken = process.env.MANAGE_PLAYWRIGHT_AUTH_TOKEN || "manage-playwright-local-agent-token";
 const manageOperatorToken = process.env.MANAGE_PLAYWRIGHT_OPERATOR_TOKEN || "manage-playwright-local-operator-token";
 
@@ -94,8 +106,9 @@ test("persists shell theme and density controls for the session", async ({ page 
   await expect(root).toHaveAttribute("data-manage-theme", "light");
   await expect(root).toHaveAttribute("data-manage-density", "regular");
 
-  await page.getByRole("button", { name: "Switch to dark theme" }).click();
-  await page.getByLabel("Density").selectOption("compact");
+  const { controls } = await openOperatorControls(page);
+  await controls.getByRole("button", { name: "Switch to dark theme" }).click();
+  await controls.getByLabel("Density").selectOption("compact");
 
   await expect(root).toHaveAttribute("data-theme", "dark");
   await expect(root).toHaveAttribute("data-manage-theme", "dark");
@@ -106,7 +119,67 @@ test("persists shell theme and density controls for the session", async ({ page 
 
   await expect(root).toHaveAttribute("data-manage-theme", "dark");
   await expect(root).toHaveAttribute("data-manage-density", "compact");
-  await expect(page.getByRole("button", { name: "Switch to light theme" })).toBeVisible();
+  const { controls: reloaded } = await openOperatorControls(page);
+  await expect(reloaded.getByRole("button", { name: "Switch to light theme" })).toBeVisible();
+});
+
+test("keeps mobile navigation identifiable and moves operator controls into settings", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+
+  const navigation = page.getByRole("navigation", { name: "Main navigation" });
+  const activeDestination = navigation.getByRole("button", { name: "Backlog" });
+  await expect(activeDestination.locator(".nav-label")).toBeVisible();
+  await expect(page.locator(".topbar-secondary-actions")).toBeHidden();
+
+  const settingsTrigger = page.getByRole("button", { name: "Settings" });
+  await settingsTrigger.click();
+  const settings = page.getByRole("dialog", { name: "Operator settings" });
+  await expect(settings.getByLabel("Density")).toBeFocused();
+  await settings.getByRole("button", { name: "Switch to dark theme" }).click();
+  await settings.getByLabel("Density").selectOption("compact");
+  await expect(page.locator("html")).toHaveAttribute("data-manage-theme", "dark");
+  await expect(page.locator("html")).toHaveAttribute("data-manage-density", "compact");
+
+  await page.keyboard.press("Escape");
+  await expect(settings).toBeHidden();
+  await expect(settingsTrigger).toBeFocused();
+
+  await navigation.getByRole("button", { name: "Today" }).click();
+  await expect(page).toHaveURL(/view=today/);
+  await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+  await expect(navigation.getByRole("button", { name: "Today" }).locator(".nav-label")).toBeVisible();
+
+  await settingsTrigger.click();
+  await page.setViewportSize({ width: 1100, height: 844 });
+  await expect(settings).toBeHidden();
+  await expect(page.locator(".topbar-secondary-actions")).toBeVisible();
+  await expect(settingsTrigger).toBeHidden();
+});
+
+test("requires typed confirmation before resetting the store", async ({ page, request }) => {
+  await page.goto("/");
+  let { controls, returnFocus } = await openOperatorControls(page);
+  let resetTrigger = controls.getByRole("button", { name: "Reset store" });
+  await resetTrigger.click();
+
+  const dialog = page.getByRole("dialog", { name: "Reset backlog store" });
+  await expect(dialog.getByRole("button", { name: "Reset store" })).toBeDisabled();
+  await dialog.getByLabel("Typed confirmation").fill("RESET");
+  await expect(dialog.getByRole("button", { name: "Reset store" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(returnFocus || resetTrigger).toBeFocused();
+
+  ({ controls, returnFocus } = await openOperatorControls(page));
+  resetTrigger = controls.getByRole("button", { name: "Reset store" });
+  await resetTrigger.click();
+  await page.getByRole("dialog", { name: "Reset backlog store" }).getByLabel("Typed confirmation").fill("RESET MANAGE");
+  await page.getByRole("dialog", { name: "Reset backlog store" }).getByRole("button", { name: "Reset store" }).click();
+  await expect(page.getByRole("dialog", { name: "Reset backlog store" })).toBeHidden();
+
+  const payload = await (await request.get("/api/work-items")).json();
+  expect(payload.workItems.some((item) => item.key === "TASK-101")).toBe(true);
 });
 
 test("Today dashboard claims the next packet and shows activity", async ({ page, request }) => {
@@ -428,6 +501,12 @@ test("creates a draft work packet", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "New packet" }).click();
   const composer = page.locator(".composer");
+  const createGate = deferred();
+
+  await page.route("**/api/work-items", async (route) => {
+    if (route.request().method() === "POST") await createGate.promise;
+    await route.continue();
+  });
 
   await composer.getByLabel("Title").fill("Document Manage deploy path");
   await composer.getByLabel("Problem statement").fill("Manage needs a documented deploy path before the domain is wired.");
@@ -436,6 +515,13 @@ test("creates a draft work packet", async ({ page }) => {
   await composer.getByLabel("Acceptance criteria").fill("Document hosting target\nDocument domain DNS expectation");
   await composer.getByLabel("Relevant files").fill("agent-backlog/manage/server.mjs\nagent-backlog/package.json");
   await composer.getByRole("button", { name: "Create packet" }).click();
+
+  await expect(composer.getByRole("button", { name: "Close" })).toBeDisabled();
+  await expect(composer.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await page.locator(".modal-backdrop").click({ position: { x: 1, y: 1 } });
+  await expect(composer).toBeVisible();
+  createGate.resolve();
 
   await expect(page.locator(".work-list").getByRole("button", { name: /TASK-107/ })).toBeVisible();
   await expect(page.getByLabel("Selected work packet").getByText("Document Manage deploy path")).toBeVisible();

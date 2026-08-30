@@ -205,8 +205,9 @@ The image builds the UI and serves UI + API from `manage/server.mjs` on `:8080`.
 ## Tests
 
 - `npm run smoke` — Node-only API smoke (no browser).
-- `npm run test:unit` — Vitest unit tests for run health, recovery, and the CLI.
+- `npm run test:unit` — Vitest unit tests for run health, recovery, navigation, and the CLI.
 - `npm test` — Playwright UI + API suite (`npx playwright install chromium` first).
+- `npm run test:a11y` — Playwright axe gate for shell, composers, and mobile settings.
 
 ## License
 

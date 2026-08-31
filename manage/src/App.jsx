@@ -42,8 +42,10 @@ import {
   deleteSavedView as deleteSavedViewRequest,
   fetchBackups,
   fetchInitiatives,
+  fetchPacketRoom,
   fetchSavedViews,
   fetchWorkItems,
+  addPacketNote as addPacketNoteRequest,
   fetchGithubReconciliation,
   fetchGithubSync,
   fetchSession,
@@ -338,7 +340,46 @@ function formatEventType(type) {
     return "Completion override";
   }
 
+  if (type === "heartbeat") {
+    return "Heartbeat";
+  }
+
+  if (type === "note") {
+    return "Human note";
+  }
+
+  if (type === "pull_request") {
+    return "GitHub pull request";
+  }
+
+  if (type === "check_run") {
+    return "GitHub check run";
+  }
+
+  if (type === "check_suite") {
+    return "GitHub check suite";
+  }
+
   return type || "Event";
+}
+
+function formatPacketRoomEventLabel(event) {
+  if (event?.kind === "heartbeat") {
+    return "Heartbeat";
+  }
+
+  if (event?.kind === "human_note" || event?.type === "note") {
+    return "Human note";
+  }
+
+  if (event?.kind === "github") {
+    if (event.type === "status") {
+      return "GitHub commit status";
+    }
+    return formatEventType(event.type);
+  }
+
+  return formatAgentEventLabel(event);
 }
 
 function formatAgentEventLabel(event) {
@@ -3680,6 +3721,7 @@ function WorkPacketDetail({
   const tabs = [
     { id: "brief", label: "Brief" },
     { id: "handoff", label: "Handoff" },
+    { id: "room", label: "Room" },
     { id: "agent", label: "Agent" },
   ];
   const activeTab = tabs.find((workspaceTab) => workspaceTab.id === tab) || tabs[0];
@@ -3825,6 +3867,7 @@ function WorkPacketDetail({
                 githubState={githubState}
               />
             ) : null}
+            {tab === "room" ? <PacketRoomTab item={item} /> : null}
             {tab === "agent" ? (
               <PacketAgentTab
                 item={item}
@@ -3839,6 +3882,139 @@ function WorkPacketDetail({
         </>
       )}
     </>
+  );
+}
+
+function PacketRoomTab({ item }) {
+  const [room, setRoom] = useState(null);
+  const [loadState, setLoadState] = useState("loading");
+  const [note, setNote] = useState("");
+  const [saveState, setSaveState] = useState("idle");
+  const [error, setError] = useState("");
+
+  const loadRoom = useCallback(async () => {
+    setLoadState("loading");
+    setError("");
+    try {
+      const payload = await fetchPacketRoom(item.key);
+      setRoom(payload);
+      setLoadState("ready");
+    } catch (caught) {
+      setError(caught.message || "Unable to load packet room.");
+      setLoadState("error");
+    }
+  }, [item.key]);
+
+  useEffect(() => {
+    loadRoom();
+  }, [loadRoom]);
+
+  async function submitNote(event) {
+    event.preventDefault();
+    const summary = note.trim();
+    if (!summary) return;
+
+    setSaveState("saving");
+    setError("");
+    try {
+      await addPacketNoteRequest(item.key, { summary });
+      setNote("");
+      await loadRoom();
+      setSaveState("idle");
+    } catch (caught) {
+      setError(caught.message || "Unable to add note.");
+      setSaveState("idle");
+    }
+  }
+
+  const events = Array.isArray(room?.events) ? [...room.events].reverse() : [];
+  const heartbeat = room?.heartbeat;
+
+  return (
+    <div className="packet-room">
+      <div className="packet-summary-lead">
+        <span>Packet room</span>
+        <p>Durable timeline for {item.key}: human notes, lifecycle, heartbeats, and GitHub signals.</p>
+      </div>
+
+      {heartbeat ? (
+        <Section title="Latest heartbeat">
+          <article className="agent-event-card" aria-label="Latest heartbeat">
+            <div className="agent-event-head">
+              <div>
+                <strong>{heartbeat.state || "running"}</strong>
+                <span>
+                  {heartbeat.agent || "Agent"} - {formatRelativeTime(heartbeat.lastSeenAt)}
+                </span>
+              </div>
+            </div>
+            {heartbeat.agentRunId ? <code>{heartbeat.agentRunId}</code> : null}
+            {heartbeat.currentStep ? <p>{heartbeat.currentStep}</p> : null}
+          </article>
+        </Section>
+      ) : null}
+
+      <Section title="Add a note">
+        <form className="packet-room-note" onSubmit={submitNote}>
+          <label htmlFor={`packet-room-note-${item.key}`}>Human note</label>
+          <textarea
+            id={`packet-room-note-${item.key}`}
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            rows={3}
+            maxLength={500}
+            placeholder="Leave an operator note on this packet."
+          />
+          <div className="packet-room-actions">
+            <button type="submit" className="button" disabled={saveState === "saving" || !note.trim()}>
+              {saveState === "saving" ? "Adding note" : "Add note"}
+            </button>
+          </div>
+        </form>
+      </Section>
+
+      {error ? <p className="detail-note" role="alert">{error}</p> : null}
+
+      <Section title="Timeline">
+        {loadState === "loading" ? <p>Loading timeline…</p> : null}
+        {loadState === "ready" && events.length === 0 ? <p>No packet room events yet.</p> : null}
+        {events.length > 0 ? (
+          <div className="agent-timeline" aria-label="Packet room timeline">
+            {events.map((event) => (
+              <PacketRoomEventCard key={event.id || `${event.at}-${event.type}`} event={event} />
+            ))}
+          </div>
+        ) : null}
+      </Section>
+    </div>
+  );
+}
+
+function PacketRoomEventCard({ event }) {
+  const evidenceUrl = safeExternalUrl(event.evidenceUrl || event.payload?.githubPrUrl);
+  const actor = event.actor?.agent || event.actor?.login || event.agent || "Operator";
+
+  return (
+    <article className="agent-event-card">
+      <div className="agent-event-head">
+        <div>
+          <strong>{formatPacketRoomEventLabel(event)}</strong>
+          <span>
+            {actor} - {formatDateTime(event.at)}
+          </span>
+        </div>
+        {event.state ? <StatusPill status={event.state} /> : event.payload?.status ? <StatusPill status={event.payload.status} /> : null}
+      </div>
+      {event.actor?.agentRunId ? <code>{event.actor.agentRunId}</code> : null}
+      {event.summary ? <p>{event.summary}</p> : null}
+      {event.currentStep ? <p className="detail-note">{event.currentStep}</p> : null}
+      {evidenceUrl ? (
+        <a href={evidenceUrl} target="_blank" rel="noreferrer">
+          {evidenceUrl}
+        </a>
+      ) : null}
+      <StructuredAgentUpdate update={event.payload || event} />
+    </article>
   );
 }
 

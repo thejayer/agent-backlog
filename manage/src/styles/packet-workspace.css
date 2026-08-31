@@ -9,7 +9,7 @@
 
 .packet-tabs {
   display: inline-grid;
-  grid-template-columns: repeat(3, minmax(88px, 1fr));
+  grid-template-columns: repeat(4, minmax(72px, 1fr));
   gap: 4px;
   justify-self: start;
   padding: 4px;
@@ -37,6 +37,7 @@
 
 .packet-tab-body,
 .packet-brief,
+.packet-room,
 .handoff-tab {
   display: grid;
   gap: var(--manage-gap);
@@ -105,6 +106,21 @@
   border: 1px solid var(--manage-border);
   border-radius: 8px;
   background: var(--manage-surface-soft);
+}
+
+.packet-room-note {
+  display: grid;
+  gap: 8px;
+}
+
+.packet-room-note textarea,
+.packet-room-note input {
+  width: 100%;
+}
+
+.packet-room-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .packet-workflow {

@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import { getGithubCachePath, getInitiativesPath, getManageDataDir, getSavedViewsPath, getWorkItemsPath } from "./paths.mjs";
+import { getGithubCachePath, getInitiativesPath, getManageDataDir, getPacketEventsPath, getSavedViewsPath, getWorkItemsPath } from "./paths.mjs";
+import { getFirestorePacketEventCollection } from "./packetEventStore.mjs";
 
 const fileReaders = {
   "github-cache": getGithubCachePath,
@@ -1415,6 +1416,7 @@ export function getStorageStatus() {
         githubCache: getGithubCachePath(),
         initiatives: getInitiativesPath(),
         savedViews: getSavedViewsPath(),
+        packetEvents: getPacketEventsPath(),
       },
       backups: {
         enabled: true,
@@ -1434,6 +1436,7 @@ export function getStorageStatus() {
       collections: {
         workItems: getFirestoreWorkItemsCollection(),
         snapshots: getFirestoreSnapshotCollection(),
+        packetEvents: getFirestorePacketEventCollection(),
       },
       documents: {
         legacyWorkItems: firestoreDocumentIds["work-items"],

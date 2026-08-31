@@ -123,15 +123,15 @@ test("renders backlog and agent prompt", async ({ page }) => {
   await expect(page.locator(".endpoint-list").getByText("/api/agent/tasks/TASK-101", { exact: true })).toBeVisible();
 });
 
-test("packet workspace tabs switch Brief, Handoff, and Agent without CSC leakage", async ({ page }) => {
+test("packet workspace tabs switch Brief, Handoff, Room, and Agent without CSC leakage", async ({ page }) => {
   await page.goto("/");
 
   const detail = page.getByLabel("Selected work packet");
   const tabs = detail.getByRole("tablist", { name: "Packet workspace tabs" });
   await expect(tabs.getByRole("tab", { name: "Brief" })).toHaveAttribute("aria-selected", "true");
   await expect(tabs.getByRole("tab", { name: "Handoff" })).toBeVisible();
+  await expect(tabs.getByRole("tab", { name: "Room" })).toBeVisible();
   await expect(tabs.getByRole("tab", { name: "Agent" })).toBeVisible();
-  await expect(tabs.getByRole("tab", { name: "Room" })).toHaveCount(0);
   await expect(detail.getByRole("heading", { name: "Desired outcome" })).toBeVisible();
   await expect(detail.getByText("CSV imports can create duplicate people")).toBeVisible();
   await expect(detail).not.toContainText("Commerce Street");
@@ -142,6 +142,17 @@ test("packet workspace tabs switch Brief, Handoff, and Agent without CSC leakage
   await expect(detail.getByText("Repo")).toBeVisible();
   await expect(detail.getByText("GitHub activity")).toBeVisible();
   await expect(detail.getByText("No cached GitHub matches recorded.")).toBeVisible();
+
+  await tabs.getByRole("tab", { name: "Room" }).click();
+  await expect(tabs.getByRole("tab", { name: "Room" })).toHaveAttribute("aria-selected", "true");
+  await expect(detail.getByText("Packet room", { exact: true })).toBeVisible();
+  await expect(detail.getByText("Loading timeline…")).toHaveCount(0);
+  await expect(detail).toContainText("TASK-");
+  await detail.getByLabel("Human note").fill("Operator note from smoke");
+  await detail.getByRole("button", { name: "Add note" }).click();
+  await expect(detail.getByLabel("Packet room timeline")).toContainText("Operator note from smoke");
+  await expect(detail.getByLabel("Packet room timeline")).toContainText("Human note");
+  await expect(detail).not.toContainText(CSC_LEAKAGE);
 
   await tabs.getByRole("tab", { name: "Agent" }).click();
   await expect(tabs.getByRole("tab", { name: "Agent" })).toHaveAttribute("aria-selected", "true");

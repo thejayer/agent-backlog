@@ -202,3 +202,14 @@ export function resetWorkItems(confirmation) {
     body: JSON.stringify({ confirmation }),
   });
 }
+
+export function fetchPacketRoom(key) {
+  return requestJson(`/api/agent/tasks/${encodeURIComponent(key)}/events`);
+}
+
+export function addPacketNote(key, payload = {}) {
+  return requestJson(`/api/agent/tasks/${encodeURIComponent(key)}/notes`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}

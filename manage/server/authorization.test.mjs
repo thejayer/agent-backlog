@@ -79,6 +79,10 @@ describe("permission matrix", () => {
       "agent-next-claim",
       "agent-task-status",
       "agent-task-recovery",
+      "agent-task-events",
+      "agent-task-heartbeat",
+      "agent-task-notes",
+      "packet-events-github",
       "agent-instructions",
     ]));
     expect(manageRoutePolicies.map((policy) => policy.id)).not.toEqual(expect.arrayContaining([
@@ -118,6 +122,18 @@ describe("permission matrix", () => {
     expect(permissionForRequest("/api/agent/tasks/TASK-101/status", "POST").permission).toBe(
       managePermissions.runAgentLifecycle,
     );
+    expect(permissionForRequest("/api/agent/tasks/TASK-101/events", "GET").permission).toBe(
+      managePermissions.viewAgentContext,
+    );
+    expect(permissionForRequest("/api/agent/tasks/TASK-101/heartbeat", "POST").permission).toBe(
+      managePermissions.runAgentLifecycle,
+    );
+    expect(permissionForRequest("/api/agent/tasks/TASK-101/notes", "POST").permission).toBe(
+      managePermissions.updateWorkspace,
+    );
+    expect(permissionForRequest("/api/packet-events/github", "POST").permission).toBe(
+      managePermissions.runAgentLifecycle,
+    );
     expect(() => authorizeManageRequest(agentRequest("GET"), {
       pathname: "/api/agent/bootstrap",
       method: "GET",
@@ -130,6 +146,18 @@ describe("permission matrix", () => {
       pathname: "/api/agent/tasks/TASK-101/status",
       method: "POST",
     })).not.toThrow();
+    expect(() => authorizeManageRequest(agentRequest("GET"), {
+      pathname: "/api/agent/tasks/TASK-101/events",
+      method: "GET",
+    })).not.toThrow();
+    expect(() => authorizeManageRequest(agentRequest("POST"), {
+      pathname: "/api/agent/tasks/TASK-101/heartbeat",
+      method: "POST",
+    })).not.toThrow();
+    expect(() => authorizeManageRequest(agentRequest("POST"), {
+      pathname: "/api/packet-events/github",
+      method: "POST",
+    })).not.toThrow();
 
     for (const [method, pathname] of [
       ["POST", "/api/agent/reset"],
@@ -139,6 +167,7 @@ describe("permission matrix", () => {
       ["GET", "/api/github/reconciliation"],
       ["POST", "/api/github/reconciliation"],
       ["POST", "/api/agent/tasks/TASK-101/recovery"],
+      ["POST", "/api/agent/tasks/TASK-101/notes"],
       ["GET", "/api/work-items"],
       ["GET", "/api/initiatives"],
       ["POST", "/api/initiatives"],

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { workItems as seedWorkItems } from "../src/data/workItems.mjs";
+import { listPacketEvents } from "./packetEventStore.mjs";
 import { writeJsonState } from "./storage.mjs";
 import {
   claimWorkItem,
@@ -174,5 +175,27 @@ describe("workStore persistence", () => {
     const persisted = onDisk.find((item) => item.key === "TASK-104");
     expect(persisted.title).toBe("Edited draft");
     expect(persisted._persistence.revision).toBe(1);
+  });
+
+  it("keeps durable packet room events after the 20-event agentEvents cap", async () => {
+    await claimWorkItem("TASK-101", { claimedBy: "Codex", leaseMinutes: 90 });
+
+    for (let index = 1; index <= 25; index += 1) {
+      await updateTaskStatus("TASK-101", {
+        status: "in_progress",
+        note: `update-${index}`,
+      });
+    }
+
+    const latest = (await listWorkItems()).find((item) => item.key === "TASK-101");
+    expect(latest.agentEvents).toHaveLength(20);
+    expect(latest.agentEvents.at(-1)).toMatchObject({ type: "status", note: "update-25" });
+    expect(latest.agentEvents.some((event) => event.type === "claimed")).toBe(false);
+
+    const durable = await listPacketEvents("TASK-101");
+    expect(durable.length).toBeGreaterThan(20);
+    expect(durable.some((event) => event.type === "claimed")).toBe(true);
+    expect(durable.at(-1)).toMatchObject({ kind: "lifecycle", summary: "update-25" });
+    expect(JSON.stringify(durable)).not.toMatch(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault/i);
   });
 });

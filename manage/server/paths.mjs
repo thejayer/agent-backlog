@@ -23,3 +23,7 @@ export function getGithubCachePath() {
 export function getSavedViewsPath() {
   return path.join(getManageDataDir(), "saved-views.json");
 }
+
+export function getPacketEventsPath() {
+  return path.join(getManageDataDir(), "packet-events.jsonl");
+}

@@ -15,6 +15,7 @@ import {
   uniquePullRequests,
   workItemLinksPullRequest,
 } from "./githubLinks.mjs";
+import { appendPacketEvent, lifecyclePacketEvent, resetPacketEvents } from "./packetEventStore.mjs";
 import { createWorkItemState, nextWorkItemKeyFromItems, readJsonState, writeJsonState, writeWorkItemMutation } from "./storage.mjs";
 
 const allowedStatuses = new Set(statusOptions.map((status) => status.id));
@@ -356,6 +357,24 @@ async function commitWorkItemMutation(items, index, nextItem, {
     throw error;
   }
 
+  const previousEvents = Array.isArray(currentItem?.agentEvents) ? currentItem.agentEvents : [];
+  const nextEvents = Array.isArray(persistedItem?.agentEvents) ? persistedItem.agentEvents : [];
+  const latestEvent = nextEvents.at(-1);
+  const previousLatest = previousEvents.at(-1);
+  const eventChanged = Boolean(
+    latestEvent
+    && (
+      previousEvents.length !== nextEvents.length
+      || previousLatest?.at !== latestEvent.at
+      || previousLatest?.type !== latestEvent.type
+      || previousLatest?.note !== latestEvent.note
+    ),
+  );
+
+  if (eventChanged) {
+    await appendPacketEvent(lifecyclePacketEvent(persistedItem, latestEvent));
+  }
+
   return workItemMutationResult(persistedItem, nextItems);
 }
 
@@ -372,6 +391,7 @@ export async function readWorkItems() {
 async function resetWorkItemsUnlocked() {
   const items = clone(seedWorkItems);
   await writeWorkItems(items);
+  await resetPacketEvents();
   return publicWorkItems(items);
 }
 

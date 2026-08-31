@@ -103,6 +103,7 @@ try {
 
   const health = await (await fetch(`${base}/api/health`)).json();
   check("health reports file storage", health.ok === true && health.storage === "file");
+  check("health service stays manage for existing clients", health.service === "manage");
 
   const unauth = await fetch(`${base}/api/work-items`);
   check("work-items requires auth (401)", unauth.status === 401);
@@ -178,6 +179,16 @@ try {
   const next = await (await agentAuthed("/api/agent/next?repo=web-app")).json();
   check("next ready packet for web-app is TASK-101", next.workItem?.key === "TASK-101");
   check("next packet renders a prompt", typeof next.prompt === "string" && next.prompt.includes("Fix contact import duplicate handling"));
+
+  const unfilteredNext = await agentAuthed("/api/agent/next");
+  const unfilteredNextBody = await unfilteredNext.json();
+  check("unfiltered next skips failed-CI web-app and returns TASK-102", unfilteredNext.status === 200 && unfilteredNextBody.workItem?.key === "TASK-102");
+
+  const labelOnly = await agentAuthed("/api/agent/next?label=data-quality");
+  check("label-only next skips blocked web-app (404)", labelOnly.status === 404);
+
+  const nextInstructions = await (await agentAuthed("/agent/instructions.md")).text();
+  check("instructions document skip-failed-CI next", nextInstructions.includes("skips repos with failed CI runs"));
 
   const claim = await agentAuthed("/api/agent/tasks/TASK-101/claim", { method: "POST", body: JSON.stringify({ agent: "Codex", leaseMinutes: 30 }) });
   const claimBody = await claim.json();

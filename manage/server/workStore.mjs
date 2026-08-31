@@ -404,7 +404,7 @@ async function createWorkItemUnlocked(payload) {
     title,
     status,
     priority,
-    project: String(payload.project || "Manage").trim(),
+      project: String(payload.project || "Agent Backlog").trim(),
     repo: String(payload.repo || "agent-backlog").trim(),
     labels: splitLabels(payload.labels),
     suggestedBranch: String(payload.branch || `codex/${key.toLowerCase()}-${branchSlug}`).trim(),

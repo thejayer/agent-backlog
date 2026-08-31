@@ -55,6 +55,23 @@ test.afterEach(async ({ page }) => {
   expect(reset.ok(), "teardown reset").toBe(true);
 });
 
+test("login chrome says Agent Backlog, not Manage", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL });
+  const page = await context.newPage();
+  await page.goto("/");
+
+  const card = page.locator(".auth-card");
+  await expect(card.getByRole("heading", { name: "Agent Backlog" })).toBeVisible();
+  await expect(card.locator(".brand-mark")).toHaveText("A");
+  await expect(card.getByRole("button", { name: "Open console" })).toBeVisible();
+  await expect(card).not.toContainText("Open Manage");
+  await expect(card.locator(".brand-mark")).not.toHaveText("M");
+  await expect(card.getByRole("heading")).not.toHaveText("Manage");
+  await expect(page.locator("body")).not.toContainText("access Manage");
+  await expect(page.locator("body")).not.toContainText(CSC_LEAKAGE);
+  await context.close();
+});
+
 test("renders backlog and agent prompt", async ({ page }) => {
   await page.goto("/");
 
@@ -65,6 +82,10 @@ test("renders backlog and agent prompt", async ({ page }) => {
   await expect(firstWorkRow).toContainText("web-app");
   await expect(firstWorkRow.locator(".readiness")).toContainText("%");
   await expect(page.locator(".field-card")).toHaveCount(3);
+  await expect(page.getByRole("tab", { name: "Brief" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Handoff" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Agent" })).toBeVisible();
+  await expect(page.getByText("Desired outcome")).toBeVisible();
   await expect(page.getByText("Agent prompt")).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy Codex command" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy Claude command" })).toBeVisible();
@@ -97,6 +118,33 @@ test("renders backlog and agent prompt", async ({ page }) => {
   await expect(page.locator(".endpoint-list").getByText("/agent/instructions.md", { exact: true })).toBeVisible();
   await expect(page.locator(".endpoint-list").getByText("/api/agent/bootstrap", { exact: true })).toBeVisible();
   await expect(page.locator(".endpoint-list").getByText("/api/agent/tasks/TASK-101", { exact: true })).toBeVisible();
+});
+
+test("packet workspace tabs switch Brief, Handoff, and Agent without CSC leakage", async ({ page }) => {
+  await page.goto("/");
+
+  const detail = page.getByLabel("Selected work packet");
+  const tabs = detail.getByRole("tablist", { name: "Packet workspace tabs" });
+  await expect(tabs.getByRole("tab", { name: "Brief" })).toHaveAttribute("aria-selected", "true");
+  await expect(tabs.getByRole("tab", { name: "Handoff" })).toBeVisible();
+  await expect(tabs.getByRole("tab", { name: "Agent" })).toBeVisible();
+  await expect(tabs.getByRole("tab", { name: "Room" })).toHaveCount(0);
+  await expect(detail.getByText("Desired outcome")).toBeVisible();
+  await expect(detail.getByText("CSV imports can create duplicate people")).toBeVisible();
+  await expect(detail).not.toContainText("Commerce Street");
+  await expect(detail).not.toContainText("CSC-");
+
+  await tabs.getByRole("tab", { name: "Handoff" }).click();
+  await expect(tabs.getByRole("tab", { name: "Handoff" })).toHaveAttribute("aria-selected", "true");
+  await expect(detail.getByText("Repo")).toBeVisible();
+  await expect(detail.getByText("GitHub activity")).toBeVisible();
+  await expect(detail.getByText("No cached GitHub matches recorded.")).toBeVisible();
+
+  await tabs.getByRole("tab", { name: "Agent" }).click();
+  await expect(tabs.getByRole("tab", { name: "Agent" })).toHaveAttribute("aria-selected", "true");
+  await expect(detail.getByLabel("Packet agent prompt")).toBeVisible();
+  await expect(detail.getByLabel("Packet agent endpoints")).toContainText("/api/agent/next/claim");
+  await expect(detail).not.toContainText(CSC_LEAKAGE);
 });
 
 test("persists shell theme and density controls for the session", async ({ page }) => {
@@ -187,7 +235,7 @@ test("Today dashboard claims the next packet and shows activity", async ({ page,
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Today" }).click();
 
   await expect(page.getByLabel("Today attention inbox")).toBeVisible();
-  await expect(page.getByLabel("Today overview")).toContainText("TASK-101");
+  await expect(page.getByLabel("Today overview")).toContainText("TASK-102");
   await expect(page.getByRole("button", { name: "Claim for agent" })).toBeVisible();
   await expect(page.getByLabel("Recent agent activity")).toContainText("No agent events yet");
   await expect(page.getByLabel("Mini repo health")).toContainText("web-app");
@@ -195,11 +243,11 @@ test("Today dashboard claims the next packet and shows activity", async ({ page,
 
   await page.getByRole("button", { name: "Claim for agent" }).click();
 
-  await expect(page.getByLabel("Recent agent activity")).toContainText("TASK-101");
+  await expect(page.getByLabel("Recent agent activity")).toContainText("TASK-102");
   await expect(page.getByLabel("Recent agent activity")).toContainText("Claimed");
 
   const payload = await (await request.get("/api/work-items")).json();
-  const claimed = payload.workItems.find((item) => item.key === "TASK-101");
+  const claimed = payload.workItems.find((item) => item.key === "TASK-102");
   expect(claimed.status).toBe("claimed");
   expect(claimed.agentEvents.at(-1)).toMatchObject({ type: "claimed", agent: "Codex" });
 });
@@ -446,6 +494,7 @@ test("Agents view shows active claims, leases, roster, and recent activity", asy
   await claimedCard.getByRole("button", { name: "Open packet" }).click();
   await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
   await expect(page.locator(".detail-panel")).toContainText("TASK-101");
+  await page.getByRole("tab", { name: "Handoff" }).click();
   await expect(page.locator(".detail-panel")).toContainText("Healthy run");
 });
 
@@ -508,8 +557,9 @@ test("creates a draft work packet", async ({ page }) => {
     await route.continue();
   });
 
-  await composer.getByLabel("Title").fill("Document Manage deploy path");
-  await composer.getByLabel("Problem statement").fill("Manage needs a documented deploy path before the domain is wired.");
+  await expect(composer.getByLabel("Project")).toHaveValue("Agent Backlog");
+  await composer.getByLabel("Title").fill("Document the deploy path");
+  await composer.getByLabel("Problem statement").fill("The backlog needs a documented deploy path before the domain is wired.");
   await composer.getByLabel("Desired outcome").fill("A reviewer can see the hosting and domain steps for agent-backlog.example.com.");
   await composer.getByLabel("Labels").fill("docs, deploy");
   await composer.getByLabel("Acceptance criteria").fill("Document hosting target\nDocument domain DNS expectation");
@@ -524,7 +574,7 @@ test("creates a draft work packet", async ({ page }) => {
   createGate.resolve();
 
   await expect(page.locator(".work-list").getByRole("button", { name: /TASK-107/ })).toBeVisible();
-  await expect(page.getByLabel("Selected work packet").getByText("Document Manage deploy path")).toBeVisible();
+  await expect(page.getByLabel("Selected work packet").getByText("Document the deploy path")).toBeVisible();
 
   await page.reload();
   await expect(page.locator(".work-list").getByRole("button", { name: /TASK-107/ })).toBeVisible();
@@ -725,6 +775,7 @@ test("serves agent Markdown and next-task JSON", async ({ request }) => {
   expect(instructionsText).toContain("Agent Backlog — Agent Instructions");
   expect(instructionsText).toContain("POST http://127.0.0.1:5186/api/agent/next/claim");
   expect(instructionsText).toContain("npm run manage:agent -- claim-next --repo web-app");
+  expect(instructionsText).toContain("Unfiltered next/claim skips repos with failed CI runs");
   expect(instructionsText).toContain("MANAGE_AUTH_TOKEN");
   expect(instructionsText).toContain("CodeRabbit");
   expect(instructionsText).toContain("post-merge closeout");
@@ -771,9 +822,22 @@ test("serves agent Markdown and next-task JSON", async ({ request }) => {
   expect(payload.prompt).toContain("Fix contact import duplicate handling");
   expect(payload.links.markdown).toBe("http://127.0.0.1:5186/agent/TASK-101.md");
 
+  const unfiltered = await request.get("/api/agent/next");
+  expect(unfiltered.ok()).toBe(true);
+  expect((await unfiltered.json()).workItem.key).toBe("TASK-102");
+
   const nextByLabel = await request.get("/api/agent/next?label=data-quality");
-  expect(nextByLabel.ok()).toBe(true);
-  expect((await nextByLabel.json()).workItem.key).toBe("TASK-101");
+  expect(nextByLabel.status()).toBe(404);
+
+  const nextByLabelOnBlockedRepo = await request.get("/api/agent/next?repo=web-app&label=data-quality");
+  expect(nextByLabelOnBlockedRepo.ok()).toBe(true);
+  expect((await nextByLabelOnBlockedRepo.json()).workItem.key).toBe("TASK-101");
+
+  const claimUnfiltered = await request.post("/api/agent/next/claim", {
+    data: { agent: "Codex", leaseMinutes: 30 },
+  });
+  expect(claimUnfiltered.ok()).toBe(true);
+  expect((await claimUnfiltered.json()).workItem.key).toBe("TASK-102");
 });
 
 test("filters backlog by label and updates the selected task URL", async ({ page }) => {
@@ -1383,6 +1447,7 @@ test("creates a GitHub issue handoff for a work packet", async ({ page, request 
 
   await page.goto("/");
   await expect(page.getByRole("link", { name: "Open issue" })).toBeVisible();
+  await page.getByRole("tab", { name: "Handoff" }).click();
   await expect(page.locator(".detail-panel")).toContainText("TASK-101: Fix contact import duplicate handling");
 });
 
@@ -1496,6 +1561,7 @@ test("lets agents claim packets and write structured status back", async ({ page
   expect(statusPayload.prompt).toContain("tests npm.cmd test; npm.cmd run build");
 
   await page.goto("/");
+  await page.getByRole("tab", { name: "Handoff" }).click();
   await expect(page.locator(".detail-panel")).toContainText("Agent timeline");
   await expect(page.locator(".detail-panel")).toContainText("Opened a PR and ran CRM tests.");
   await expect(page.locator(".detail-panel")).toContainText("npm.cmd test");

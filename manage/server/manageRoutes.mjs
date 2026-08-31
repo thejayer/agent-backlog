@@ -1,5 +1,6 @@
 import { buildAgentBootstrap, buildAgentInstructions, buildAgentPrompt, findNextWorkItem } from "../src/lib/agentPrompt.mjs";
 import { labelOptions, repositories, statusOptions } from "../src/data/workItems.mjs";
+import { blockedRepoIds } from "../src/lib/repoHealth.mjs";
 import {
   authorizeWorkItemCompletion,
   clearSessionCookie,
@@ -42,6 +43,15 @@ import {
 } from "./workStore.mjs";
 
 const RESET_CONFIRMATION = "RESET MANAGE";
+
+async function nextWorkSelectionOptions({ repo, label } = {}) {
+  const githubCache = await readGithubCache();
+  return {
+    repo: repo || undefined,
+    label: label || undefined,
+    blockedRepoIds: blockedRepoIds(repositories, githubCache),
+  };
+}
 
 function send(res, status, body, contentType) {
   res.statusCode = status;
@@ -809,7 +819,7 @@ async function handleRoute(req, res, baseUrl) {
     const body = withMutationMetadata(req, await readJsonBody(req));
     const repo = body.repo || url.searchParams.get("repo");
     const label = body.label || url.searchParams.get("label");
-    const item = findNextWorkItem(await listWorkItems(), { repo, label });
+    const item = findNextWorkItem(await listWorkItems(), await nextWorkSelectionOptions({ repo, label }));
 
     if (!item) {
       sendJson(res, 404, {
@@ -836,7 +846,7 @@ async function handleRoute(req, res, baseUrl) {
 
     const repo = url.searchParams.get("repo");
     const label = url.searchParams.get("label");
-    const item = findNextWorkItem(await listWorkItems(), { repo, label });
+    const item = findNextWorkItem(await listWorkItems(), await nextWorkSelectionOptions({ repo, label }));
 
     if (!item) {
       sendJson(res, 404, {
@@ -957,7 +967,7 @@ export async function routeManageRequest(req, res, baseUrl) {
   } catch (error) {
     const status = error.statusCode || (error instanceof SyntaxError ? 400 : 500);
     sendJson(res, status, {
-      error: error.message || "Manage API request failed",
+      error: error.message || "API request failed",
       ...(error.code ? { code: error.code } : {}),
       ...(error.details ? { details: error.details } : {}),
       ...(Number.isFinite(error.expectedRevision) ? { expectedRevision: error.expectedRevision } : {}),

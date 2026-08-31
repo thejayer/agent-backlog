@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 import "./styles/shell.css";
 import "./styles/backlog.css";
+import "./styles/packet-workspace.css";
 import "./styles.css";
 
 createRoot(document.getElementById("root")).render(

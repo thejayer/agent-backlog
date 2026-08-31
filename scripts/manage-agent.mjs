@@ -36,15 +36,15 @@ Commands:
   create                  Create a new work packet via the agent API.
 
 Common options:
-  --base-url <url>        Manage base URL. Default: ${DEFAULT_BASE_URL}
+  --base-url <url>        Agent Backlog base URL. Default: ${DEFAULT_BASE_URL}
   --agent <name>          Agent name. Default: ${DEFAULT_AGENT}
   --lease-minutes <n>     Claim lease length. Default: 90
-  --repo <repo>           Manage repo filter, or GitHub owner/repo for closeout.
-  --label <label>         Manage label filter for claim-next.
+  --repo <repo>           Repo filter, or GitHub owner/repo for closeout.
+  --label <label>         Label filter for claim-next.
   --agent-run-id <id>     Agent run id for status writes. Defaults to current task value.
   --note <text>           Status note.
-  --branch <name>         GitHub branch recorded in Manage.
-  --pr <url|number>       GitHub PR URL/number/ref recorded in Manage.
+  --branch <name>         GitHub branch recorded on the packet.
+  --pr <url|number>       GitHub PR URL/number/ref recorded on the packet.
   --test <text>           Repeatable testsRun entry.
   --file <path>           Repeatable filesChanged entry.
   --blocker <text>        Repeatable blocker entry.
@@ -181,7 +181,7 @@ async function requestManage(path, { method = "GET", body } = {}, options = {}) 
   const payload = text ? JSON.parse(text) : {};
 
   if (!response.ok) {
-    const message = payload.error || `Manage request failed with ${response.status}`;
+    const message = payload.error || `Request failed with ${response.status}`;
     throw Object.assign(new Error(message), { statusCode: response.status, payload });
   }
 

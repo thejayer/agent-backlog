@@ -1,0 +1,168 @@
+.packet-workspace-shell {
+  display: grid;
+  gap: var(--manage-gap);
+}
+
+.packet-hero {
+  align-items: start;
+}
+
+.packet-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(88px, 1fr));
+  gap: 4px;
+  justify-self: start;
+  padding: 4px;
+  border: 1px solid var(--manage-border);
+  border-radius: 8px;
+  background: var(--manage-surface-soft);
+}
+
+.packet-tabs button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--manage-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.packet-tabs button.is-active {
+  background: var(--manage-surface);
+  color: var(--manage-ink);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+}
+
+.packet-tab-body,
+.packet-brief,
+.handoff-tab {
+  display: grid;
+  gap: var(--manage-gap);
+  min-width: 0;
+}
+
+.packet-summary-lead,
+.blocked-callout,
+.latest-note {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--manage-border);
+  border-radius: 8px;
+  background: var(--manage-surface-soft);
+}
+
+.packet-summary-lead span,
+.blocked-callout strong,
+.latest-note strong {
+  margin: 0;
+  color: var(--manage-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.packet-summary-lead p,
+.blocked-callout p,
+.latest-note p {
+  margin: 0;
+  color: var(--manage-ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.blocked-callout {
+  border-color: color-mix(in srgb, var(--manage-red) 26%, transparent);
+  background: color-mix(in srgb, var(--manage-red) 8%, var(--manage-surface));
+}
+
+.brief-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--manage-gap);
+}
+
+.handoff-grid-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.agent-tab {
+  display: grid;
+  gap: var(--manage-gap);
+  min-width: 0;
+}
+
+.agent-prompt-card,
+.packet-endpoints {
+  min-width: 0;
+}
+
+.packet-endpoints {
+  display: grid;
+  gap: var(--manage-gap-tight);
+  padding: 12px;
+  border: 1px solid var(--manage-border);
+  border-radius: 8px;
+  background: var(--manage-surface-soft);
+}
+
+.packet-workflow {
+  display: flex;
+  gap: 0;
+  align-items: stretch;
+  padding: 8px;
+  border: 1px solid var(--manage-border);
+  border-radius: 8px;
+  background: var(--manage-surface-soft);
+}
+
+.workflow-step {
+  display: grid;
+  flex: 1 1 0;
+  min-width: 0;
+  gap: 4px;
+  padding: 7px 8px;
+}
+
+.workflow-step span {
+  color: var(--manage-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.workflow-step strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--manage-ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-complete strong {
+  color: var(--manage-green, var(--manage-ink));
+}
+
+.workflow-active strong {
+  color: var(--manage-blue, var(--manage-ink));
+}
+
+@media (max-width: 720px) {
+  .brief-grid,
+  .handoff-grid-three {
+    grid-template-columns: 1fr;
+  }
+
+  .packet-tabs {
+    width: 100%;
+  }
+
+  .packet-workflow {
+    flex-wrap: wrap;
+  }
+
+  .workflow-step {
+    flex: 1 1 40%;
+  }
+}

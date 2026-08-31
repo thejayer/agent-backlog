@@ -39,7 +39,7 @@ export function buildGithubIssueBody(workItem, { baseUrl = "" } = {}) {
 
   return `Created from Agent Backlog work packet ${workItem.key}.
 
-Manage task: ${taskUrl}
+Work packet: ${taskUrl}
 Task JSON: ${jsonUrl}
 
 ## Summary

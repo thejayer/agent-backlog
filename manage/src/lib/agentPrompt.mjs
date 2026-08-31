@@ -368,7 +368,7 @@ export function buildAgentPostMergeCloseoutPowerShellCommand({
   const agentRunId = String(workItem.agentRunId || "returned-agent-run-id").trim();
 
   return `# Post-merge closeout for ${workItem.key || "{key}"}.
-# Verifies the PR is merged, gathers merge/check/file details, then writes status=done to Manage.
+# Verifies the PR is merged, gathers merge/check/file details, then writes status=done to the backlog.
 ${tokenBootstrapScript({ onlyIfMissing: true })}
 $repo = ${powerShellString(slug)}
 $taskKey = ${powerShellString(key)}
@@ -545,6 +545,7 @@ Token: set MANAGE_AUTH_TOKEN to your bearer token and send it as Authorization: 
 - If the session is inside the agent-backlog repo, prefer the lifecycle CLI: \`npm run manage:agent -- claim-next --repo web-app\`.
 - Claim one ready packet before editing code: POST ${endpoint(baseUrl, "/api/agent/next/claim")}
 - Optional filters are repo and label, for example GET ${endpoint(baseUrl, "/api/agent/next?repo=web-app&label=bug")}
+- Unfiltered next/claim skips repos with failed CI runs (repo health blocked). Pass an explicit \`repo\` filter to intentionally pick work from a blocked repo after triaging Actions failures.
 - For a specific packet, read GET ${endpoint(baseUrl, "/agent/TASK-101.md")} or GET ${endpoint(baseUrl, "/api/agent/tasks/TASK-101")}
 - Use the returned prompt as the working brief.
 - Keep the returned agentRunId and include it in status updates.
@@ -582,7 +583,7 @@ Token: set MANAGE_AUTH_TOKEN to your bearer token and send it as Authorization: 
 - If in-app browser verification fails to start, run focused Playwright visual QA and record the fallback in testsRun.
 - Update status to needs_review after opening the PR and listing checks.
 - Mark the PR ready when review should start, then poll GitHub checks until CodeRabbit is pass/fail/skipped or clearly still pending.
-- After merge, run the post-merge closeout command so Manage gets the PR URL, branch, merge commit, final check state, and changed files without hand-filling.
+- After merge, run the post-merge closeout command so the backlog gets the PR URL, branch, merge commit, final check state, and changed files without hand-filling.
 - Update status to blocked when external input is required.
 `;
 }
@@ -767,7 +768,7 @@ ${compactEventLog(workItem.agentEvents)}
 ## Matched GitHub Activity
 ${compactGithubLinks(workItem.githubLinks)}
 
-## Manage Writeback
+## Agent Writeback
 - Claim next ready packet: POST /api/agent/next/claim with {"repo":"${field(workItem.repo)}","agent":"Codex","leaseMinutes":90}
 - Claim this packet: POST /api/agent/tasks/${workItem.key}/claim with {"agent":"Codex","leaseMinutes":90}
 - Update status: POST /api/agent/tasks/${workItem.key}/status with {"status":"needs_review","agent":"Codex","agentRunId":"${field(workItem.agentRunId, "optional-run-id")}","note":"summary","githubBranch":"branch-name","githubPrUrl":"https://...","testsRun":["npm.cmd test"],"filesChanged":["path/to/file"],"blockers":[],"nextSteps":["review PR"]}
@@ -798,16 +799,26 @@ export function readinessScore(workItem) {
   return Math.round((checks.filter(Boolean).length / checks.length) * 100);
 }
 
-export function findNextWorkItem(items, { repo, label } = {}) {
-  return findNextMatchingWorkItem(items, { repo, label });
+export function findNextWorkItem(items, options = {}) {
+  return findNextMatchingWorkItem(items, options);
 }
 
-export function findNextMatchingWorkItem(items, { repo, label } = {}) {
+/**
+ * Pick the next ready packet.
+ * When `blockedRepoIds` is provided and no explicit `repo` filter is set,
+ * packets whose repo is blocked (failed CI) are skipped. Passing `repo`
+ * intentionally allows claiming work from a blocked repo after triage.
+ */
+export function findNextMatchingWorkItem(items, { repo, label, blockedRepoIds = new Set() } = {}) {
   const normalizedLabel = normalizeLabel(label);
+  const blocked = blockedRepoIds instanceof Set ? blockedRepoIds : new Set(blockedRepoIds || []);
 
   return [...items]
     .filter((item) => item.status === "ready_for_agent" || isExpiredLease(item))
-    .filter((item) => (repo ? item.repo === repo : true))
+    .filter((item) => {
+      if (repo) return item.repo === repo;
+      return !blocked.has(item.repo);
+    })
     .filter((item) => (normalizedLabel ? itemLabels(item).includes(normalizedLabel) : true))
     .sort((a, b) => {
       const priorityDelta = (priorityRank[a.priority] || 99) - (priorityRank[b.priority] || 99);

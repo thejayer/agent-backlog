@@ -42,6 +42,7 @@
   --brand-ink: #fbf7ef;
   --accent-soft: #7bafd426;
   --accent-rust: #b44f28;
+  --link: #3f6ea5;
   --focus-ring: rgba(123, 175, 212, 0.42);
 
   /* Radii */
@@ -116,6 +117,7 @@
   --brand-ink: #0c131c;
   --accent-soft: #7bafd426;
   --accent-rust: #d2683c;
+  --link: #5b8fbf;
   --focus-ring: rgba(123, 175, 212, 0.46);
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.12);
   --shadow-md: 0 8px 18px -14px rgba(0, 0, 0, 0.48);
@@ -155,6 +157,7 @@
   --brand-ink: #ffffff;
   --accent-soft: rgba(143, 192, 255, 0.16);
   --accent-rust: #f5c451;
+  --link: #8fc0ff;
   --focus-ring: rgba(143, 192, 255, 0.46);
   --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.03);
   --shadow-md: 0 12px 30px rgba(0, 0, 0, 0.24);

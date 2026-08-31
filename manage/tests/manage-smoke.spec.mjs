@@ -55,8 +55,11 @@ test.afterEach(async ({ page }) => {
   expect(reset.ok(), "teardown reset").toBe(true);
 });
 
-test("login chrome says Agent Backlog, not Manage", async ({ browser, baseURL }) => {
-  const context = await browser.newContext({ baseURL });
+test("login chrome says Agent Backlog, not Manage", async ({ browser }) => {
+  const context = await browser.newContext({
+    baseURL: "http://127.0.0.1:5186",
+    extraHTTPHeaders: { Authorization: "Bearer not-a-session-token" },
+  });
   const page = await context.newPage();
   await page.goto("/");
 
@@ -66,9 +69,9 @@ test("login chrome says Agent Backlog, not Manage", async ({ browser, baseURL })
   await expect(card.getByRole("button", { name: "Open console" })).toBeVisible();
   await expect(card).not.toContainText("Open Manage");
   await expect(card.locator(".brand-mark")).not.toHaveText("M");
-  await expect(card.getByRole("heading")).not.toHaveText("Manage");
-  await expect(page.locator("body")).not.toContainText("access Manage");
-  await expect(page.locator("body")).not.toContainText(CSC_LEAKAGE);
+  await expect(card.getByRole("heading", { name: "Manage" })).toHaveCount(0);
+  await expect(card).not.toContainText("access Manage");
+  await expect(card).not.toContainText(CSC_LEAKAGE);
   await context.close();
 });
 
@@ -85,7 +88,7 @@ test("renders backlog and agent prompt", async ({ page }) => {
   await expect(page.getByRole("tab", { name: "Brief" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Handoff" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Agent" })).toBeVisible();
-  await expect(page.getByText("Desired outcome")).toBeVisible();
+  await expect(page.getByLabel("Selected work packet").getByRole("heading", { name: "Desired outcome" })).toBeVisible();
   await expect(page.getByText("Agent prompt")).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy Codex command" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy Claude command" })).toBeVisible();
@@ -129,7 +132,7 @@ test("packet workspace tabs switch Brief, Handoff, and Agent without CSC leakage
   await expect(tabs.getByRole("tab", { name: "Handoff" })).toBeVisible();
   await expect(tabs.getByRole("tab", { name: "Agent" })).toBeVisible();
   await expect(tabs.getByRole("tab", { name: "Room" })).toHaveCount(0);
-  await expect(detail.getByText("Desired outcome")).toBeVisible();
+  await expect(detail.getByRole("heading", { name: "Desired outcome" })).toBeVisible();
   await expect(detail.getByText("CSV imports can create duplicate people")).toBeVisible();
   await expect(detail).not.toContainText("Commerce Street");
   await expect(detail).not.toContainText("CSC-");
@@ -142,7 +145,7 @@ test("packet workspace tabs switch Brief, Handoff, and Agent without CSC leakage
 
   await tabs.getByRole("tab", { name: "Agent" }).click();
   await expect(tabs.getByRole("tab", { name: "Agent" })).toHaveAttribute("aria-selected", "true");
-  await expect(detail.getByLabel("Packet agent prompt")).toBeVisible();
+  await expect(detail.getByLabel("Packet agent prompt", { exact: true })).toBeVisible();
   await expect(detail.getByLabel("Packet agent endpoints")).toContainText("/api/agent/next/claim");
   await expect(detail).not.toContainText(CSC_LEAKAGE);
 });

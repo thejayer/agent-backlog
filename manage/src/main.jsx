@@ -5,6 +5,7 @@ import "./styles/shell.css";
 import "./styles/backlog.css";
 import "./styles/packet-workspace.css";
 import "./styles.css";
+import "./styles/glass.css";
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>

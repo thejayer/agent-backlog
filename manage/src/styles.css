@@ -12,7 +12,7 @@
   --m-faint: var(--text-muted);
   --m-brand: var(--brand);
   --m-accent: var(--brand);
-  --m-link: var(--stage-holding);
+  --m-link: var(--accent-blue);
   --m-green: var(--accent-green);
   --m-rust: var(--accent-rust);
   --m-red: var(--accent-red);

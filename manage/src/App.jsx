@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   buildAgentClaimCommand,
   buildAgentClaimPowerShellCommand,
@@ -617,6 +617,13 @@ export default function App() {
   const [sessionMode, setSessionMode] = useState("local");
   const [sessionInfo, setSessionInfo] = useState(null);
   const [authError, setAuthError] = useState("");
+  const [themeMode, setThemeMode] = useState(() => readShellPreference("manage-theme", "light", themeOptions));
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = themeMode;
+    document.documentElement.dataset.manageTheme = themeMode;
+    writeShellPreference("manage-theme", themeMode);
+  }, [themeMode]);
 
   useEffect(() => {
     let canceled = false;
@@ -687,7 +694,15 @@ export default function App() {
     return <LoginScreen error={authError} onLogin={handleLogin} sessionInfo={sessionInfo} />;
   }
 
-  return <ManageApp onLogout={handleLogout} sessionMode={sessionMode} sessionUser={sessionInfo?.user} />;
+  return (
+    <ManageApp
+      onLogout={handleLogout}
+      sessionMode={sessionMode}
+      sessionUser={sessionInfo?.user}
+      themeMode={themeMode}
+      onThemeModeChange={setThemeMode}
+    />
+  );
 }
 
 function readInitialViewState() {
@@ -698,7 +713,7 @@ function readInitialViewState() {
   return parseManageViewState(window.location.search);
 }
 
-function ManageApp({ onLogout, sessionMode, sessionUser }) {
+function ManageApp({ onLogout, sessionMode, sessionUser, themeMode, onThemeModeChange }) {
   const initialView = readInitialViewState();
   const historyIntentRef = useRef("replace");
   const skipUrlWriteRef = useRef(false);
@@ -742,7 +757,6 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
   const [backups, setBackups] = useState([]);
   const [backupState, setBackupState] = useState("loading");
   const [backupMessage, setBackupMessage] = useState("Checking backups");
-  const [themeMode, setThemeMode] = useState(() => readShellPreference("manage-theme", "light", themeOptions));
   const [densityMode, setDensityMode] = useState(() =>
     readShellPreference(
       "manage-density",
@@ -849,12 +863,6 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
   useEffect(() => {
     refreshSystemStatus();
   }, []);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = themeMode;
-    document.documentElement.dataset.manageTheme = themeMode;
-    writeShellPreference("manage-theme", themeMode);
-  }, [themeMode]);
 
   useEffect(() => {
     document.documentElement.dataset.density = densityMode;
@@ -1866,7 +1874,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser }) {
       onOpenPacket={openPacket}
       onCreate={() => (activeNav === "initiatives" ? setShowInitiativeComposer(true) : setShowComposer(true))}
       onDensityModeChange={setDensityMode}
-      onThemeModeChange={setThemeMode}
+      onThemeModeChange={onThemeModeChange}
       onReset={requestResetStore}
       onLogout={onLogout}
       IconComponent={Icon}

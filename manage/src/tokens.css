@@ -42,14 +42,7 @@
   --brand-ink: #fbf7ef;
   --accent-soft: #7bafd426;
   --accent-rust: #b44f28;
-
-  /* Pipeline stages */
-  --stage-prospecting: #8a93a1;
-  --stage-holding: #3f6ea5;
-  --stage-active: #b44f28;
-  --stage-dd: #3f86bc;
-  --stage-term: #6a4e8c;
-  --stage-closed: #2f6e4e;
+  --focus-ring: rgba(123, 175, 212, 0.42);
 
   /* Radii */
   --radius-xs: 4px;
@@ -123,16 +116,50 @@
   --brand-ink: #0c131c;
   --accent-soft: #7bafd426;
   --accent-rust: #d2683c;
-  --stage-prospecting: #8a93a1;
-  --stage-holding: #5b8fbf;
-  --stage-active: #d2683c;
-  --stage-dd: #6ea8d6;
-  --stage-term: #a488c8;
-  --stage-closed: #4fb081;
+  --focus-ring: rgba(123, 175, 212, 0.46);
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.12);
   --shadow-md: 0 8px 18px -14px rgba(0, 0, 0, 0.48);
   --shadow-lg: 0 18px 36px -28px rgba(0, 0, 0, 0.64);
   --shadow-xl: 0 30px 60px -34px rgba(0, 0, 0, 0.7);
+}
+
+[data-theme="glass"] {
+  color-scheme: dark;
+
+  --bg-root: #070a11;
+  --bg-primary: rgba(255, 255, 255, 0.07);
+  --bg-secondary: rgba(255, 255, 255, 0.05);
+  --bg-tertiary: rgba(255, 255, 255, 0.11);
+  --border-primary: rgba(255, 255, 255, 0.14);
+  --border-secondary: rgba(255, 255, 255, 0.24);
+  --text-primary: #eaf0f8;
+  --text-secondary: rgba(234, 240, 248, 0.82);
+  --text-muted: rgba(234, 240, 248, 0.60);
+  --text-on-accent: #07101e;
+  --text-on-danger: #07101e;
+  --text-on-warning: #07101e;
+  --text-on-success: #07101e;
+  --accent-blue: #8fc0ff;
+  --accent-purple: #c9a6f5;
+  --accent-green: #7ef0a8;
+  --accent-red: #ff9a9a;
+  --accent-orange: #f5c451;
+  --primary-hover: #b7d7ff;
+  --overlay-bg: rgba(7, 10, 17, 0.60);
+  --overlay-muted: rgba(7, 10, 17, 0.46);
+  --overlay-strong: rgba(7, 10, 17, 0.78);
+  --surface-wash: rgba(255, 255, 255, 0.025);
+  --surface-hover: rgba(255, 255, 255, 0.07);
+  --canvas-contrast: #ffffff;
+  --brand: #3a6fc0;
+  --brand-ink: #ffffff;
+  --accent-soft: rgba(143, 192, 255, 0.16);
+  --accent-rust: #f5c451;
+  --focus-ring: rgba(143, 192, 255, 0.46);
+  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.03);
+  --shadow-md: 0 12px 30px rgba(0, 0, 0, 0.24);
+  --shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.34);
+  --shadow-xl: 0 30px 80px rgba(0, 0, 0, 0.56);
 }
 
 body {

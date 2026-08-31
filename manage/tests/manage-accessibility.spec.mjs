@@ -59,6 +59,11 @@ test("@a11y shell and packet composer pass the blocking accessibility gate", asy
   await page.goto("/");
   await expectNoBlockingViolations(page, testInfo, "shell");
 
+  const { controls } = await openOperatorControls(page);
+  await controls.getByLabel("Theme").selectOption("glass");
+  await expect(page.locator("html")).toHaveAttribute("data-manage-theme", "glass");
+  await expectNoBlockingViolations(page, testInfo, "shell-glass");
+
   const trigger = page.getByRole("button", { name: "New packet" });
   await trigger.focus();
   await page.keyboard.press("Enter");

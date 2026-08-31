@@ -150,15 +150,61 @@ test("packet workspace tabs switch Brief, Handoff, and Agent without CSC leakage
   await expect(detail).not.toContainText(CSC_LEAKAGE);
 });
 
+test("applies the selected theme to anonymous auth screens", async ({ browser }) => {
+  const context = await browser.newContext({
+    baseURL: "http://127.0.0.1:5186",
+    extraHTTPHeaders: { Authorization: "Bearer not-a-session-token" },
+  });
+  const page = await context.newPage();
+  await page.addInitScript(() => window.sessionStorage.setItem("manage-theme", "glass"));
+  await page.goto("/");
+
+  const root = page.locator("html");
+  await expect(root).toHaveAttribute("data-theme", "glass");
+  await expect(root).toHaveAttribute("data-manage-theme", "glass");
+  await expect(page.getByRole("heading", { name: "Agent Backlog" })).toBeVisible();
+  await expect(page.getByLabel("Operator token")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText(CSC_LEAKAGE);
+  await expect(page.locator("body")).not.toContainText(/RegVault-inspired|Commerce Street|commercestreet/i);
+  await context.close();
+});
+
 test("persists shell theme and density controls for the session", async ({ page }) => {
   await page.goto("/");
 
   const root = page.locator("html");
+  const { controls } = await openOperatorControls(page);
+  await expect(root).toHaveAttribute("data-theme", "light");
   await expect(root).toHaveAttribute("data-manage-theme", "light");
   await expect(root).toHaveAttribute("data-manage-density", "regular");
+  await expect(controls.getByLabel("Theme")).toHaveValue("light");
+  await expect(controls.getByLabel("Theme").locator("option")).toHaveText(["Light", "Dark", "Glass"]);
+  await expect(controls.getByLabel("Theme")).not.toContainText(CSC_LEAKAGE);
+  await expect(controls.getByLabel("Theme")).not.toContainText(/RegVault|Commerce Street|CSC/i);
 
-  const { controls } = await openOperatorControls(page);
-  await controls.getByRole("button", { name: "Switch to dark theme" }).click();
+  await controls.getByLabel("Theme").selectOption("glass");
+  await expect(root).toHaveAttribute("data-theme", "glass");
+  await expect(root).toHaveAttribute("data-manage-theme", "glass");
+
+  const glassTreatment = await page.evaluate(() => {
+    const shell = document.querySelector(".app-shell");
+    const topbar = document.querySelector(".topbar");
+    return {
+      desktop: window.matchMedia("(min-width: 981px)").matches,
+      shellColumns: shell ? getComputedStyle(shell).gridTemplateColumns : "",
+      topbarBackdrop: topbar ? getComputedStyle(topbar).backdropFilter : "",
+      topbarRadius: topbar ? getComputedStyle(topbar).borderRadius : "",
+    };
+  });
+
+  if (glassTreatment.desktop) {
+    expect(glassTreatment.shellColumns.split(" ")[0]).toBe("72px");
+  }
+  expect(glassTreatment.topbarBackdrop).toContain("blur");
+  expect(glassTreatment.topbarRadius).toBe("16px");
+  await expect(page.locator("body")).not.toContainText(CSC_LEAKAGE);
+
+  await controls.getByLabel("Theme").selectOption("dark");
   await controls.getByLabel("Density").selectOption("compact");
 
   await expect(root).toHaveAttribute("data-theme", "dark");
@@ -171,7 +217,8 @@ test("persists shell theme and density controls for the session", async ({ page 
   await expect(root).toHaveAttribute("data-manage-theme", "dark");
   await expect(root).toHaveAttribute("data-manage-density", "compact");
   const { controls: reloaded } = await openOperatorControls(page);
-  await expect(reloaded.getByRole("button", { name: "Switch to light theme" })).toBeVisible();
+  await expect(reloaded.getByLabel("Theme")).toHaveValue("dark");
+  await expect(reloaded.getByLabel("Theme").locator("option")).toHaveText(["Light", "Dark", "Glass"]);
 });
 
 test("keeps mobile navigation identifiable and moves operator controls into settings", async ({ page }) => {
@@ -187,7 +234,7 @@ test("keeps mobile navigation identifiable and moves operator controls into sett
   await settingsTrigger.click();
   const settings = page.getByRole("dialog", { name: "Operator settings" });
   await expect(settings.getByLabel("Density")).toBeFocused();
-  await settings.getByRole("button", { name: "Switch to dark theme" }).click();
+  await settings.getByLabel("Theme").selectOption("dark");
   await settings.getByLabel("Density").selectOption("compact");
   await expect(page.locator("html")).toHaveAttribute("data-manage-theme", "dark");
   await expect(page.locator("html")).toHaveAttribute("data-manage-density", "compact");

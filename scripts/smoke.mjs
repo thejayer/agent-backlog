@@ -195,6 +195,103 @@ try {
   check("claim returns 200 and a lease", claim.status === 200 && claimBody.workItem?.status === "claimed" && Boolean(claimBody.workItem?.leaseExpiresAt));
   check("claim issues an agent run id", String(claimBody.workItem?.agentRunId || "").startsWith("TASK-101-"));
 
+  const heartbeat = await agentAuthed("/api/agent/tasks/TASK-101/heartbeat", {
+    method: "POST",
+    body: JSON.stringify({
+      agent: "Codex",
+      agentRunId: claimBody.workItem.agentRunId,
+      state: "running",
+      currentStep: "Writing packet room tests",
+    }),
+  });
+  const heartbeatBody = await heartbeat.json();
+  check("heartbeat returns 200 without changing the lease", heartbeat.status === 200 && heartbeatBody.leaseExpiresAt === claimBody.workItem.leaseExpiresAt);
+  check("heartbeat records running state", heartbeatBody.event?.kind === "heartbeat" && heartbeatBody.event?.currentStep === "Writing packet room tests");
+
+  const agentNoteDenied = await agentAuthed("/api/agent/tasks/TASK-101/notes", {
+    method: "POST",
+    body: JSON.stringify({ summary: "Agents cannot write operator notes" }),
+  });
+  check("agent token cannot add packet room notes (403)", agentNoteDenied.status === 403);
+
+  const operatorNote = await operatorAuthed("/api/agent/tasks/TASK-101/notes", {
+    method: "POST",
+    body: JSON.stringify({ summary: "Operator room note" }),
+  });
+  const operatorNoteBody = await operatorNote.json();
+  check("operator can add a packet room note", operatorNote.status === 201 && operatorNoteBody.event?.kind === "human_note");
+
+  const githubSignal = await agentAuthed("/api/packet-events/github", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${AGENT_TOKEN}`,
+      "Content-Type": "application/json",
+      "x-github-event": "pull_request",
+      "x-github-delivery": "smoke-delivery-101",
+    },
+    body: JSON.stringify({
+      action: "opened",
+      number: 12,
+      pull_request: {
+        id: 12,
+        number: 12,
+        title: "TASK-101 Packet Room",
+        html_url: "https://github.com/your-org/web-app/pull/12",
+        head: { ref: "cursor/task-101-room" },
+        state: "open",
+      },
+      repository: { full_name: "your-org/web-app" },
+    }),
+  });
+  const githubSignalBody = await githubSignal.json();
+  check("authenticated GitHub ingest records a pull request", githubSignal.status === 200 && githubSignalBody.events?.[0]?.created === true);
+  check("GitHub ingest stays generic", !JSON.stringify(githubSignalBody).match(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault/i));
+
+  const replayGithub = await agentAuthed("/api/packet-events/github", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${AGENT_TOKEN}`,
+      "Content-Type": "application/json",
+      "x-github-event": "pull_request",
+      "x-github-delivery": "smoke-delivery-101",
+    },
+    body: JSON.stringify({
+      action: "opened",
+      number: 12,
+      pull_request: {
+        title: "TASK-101 Packet Room",
+        html_url: "https://github.com/your-org/web-app/pull/12",
+        head: { ref: "cursor/task-101-room" },
+      },
+      repository: { full_name: "your-org/web-app" },
+    }),
+  });
+  const replayGithubBody = await replayGithub.json();
+  check("GitHub ingest is idempotent by delivery id", replayGithub.status === 200 && replayGithubBody.events?.[0]?.created === false);
+
+  const unknownGithub = await agentAuthed("/api/packet-events/github", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${AGENT_TOKEN}`,
+      "Content-Type": "application/json",
+      "x-github-event": "pull_request",
+      "x-github-delivery": "smoke-delivery-missing",
+    },
+    body: JSON.stringify({
+      action: "opened",
+      pull_request: { title: "No packet key here", head: { ref: "feature/no-key" } },
+    }),
+  });
+  check("unmatched GitHub signal returns 422", unknownGithub.status === 422);
+
+  const room = await (await agentAuthed("/api/agent/tasks/TASK-101/events")).json();
+  check("packet room includes heartbeat, note, and GitHub events", Array.isArray(room.events)
+    && room.events.some((event) => event.kind === "heartbeat")
+    && room.events.some((event) => event.kind === "human_note" && event.summary === "Operator room note")
+    && room.events.some((event) => event.kind === "github" && event.type === "pull_request"));
+  check("packet room heartbeat projection is present", room.heartbeat?.state === "running" && room.heartbeat?.currentStep === "Writing packet room tests");
+  check("packet room payload stays generic", !JSON.stringify(room).match(/Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault/i));
+
   const conflict = await agentAuthed("/api/agent/tasks/TASK-101/claim", { method: "POST", body: JSON.stringify({ agent: "Claude Code" }) });
   check("second claim is rejected (409)", conflict.status === 409);
 

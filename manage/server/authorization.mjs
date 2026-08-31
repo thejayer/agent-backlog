@@ -178,6 +178,26 @@ export const manageRoutePolicies = Object.freeze([
     methods: { POST: managePermissions.updateWorkspace },
   },
   {
+    id: "agent-task-events",
+    match: (pathname) => /^\/api\/agent\/tasks\/[^/]+\/events$/.test(pathname),
+    methods: { GET: managePermissions.viewAgentContext },
+  },
+  {
+    id: "agent-task-heartbeat",
+    match: (pathname) => /^\/api\/agent\/tasks\/[^/]+\/heartbeat$/.test(pathname),
+    methods: { POST: managePermissions.runAgentLifecycle },
+  },
+  {
+    id: "agent-task-notes",
+    match: (pathname) => /^\/api\/agent\/tasks\/[^/]+\/notes$/.test(pathname),
+    methods: { POST: managePermissions.updateWorkspace },
+  },
+  {
+    id: "packet-events-github",
+    match: exact("/api/packet-events/github"),
+    methods: { POST: managePermissions.runAgentLifecycle },
+  },
+  {
     id: "agent-task",
     match: (pathname) => /^\/api\/agent\/tasks\/[^/]+$/.test(pathname),
     methods: { GET: managePermissions.viewAgentContext },

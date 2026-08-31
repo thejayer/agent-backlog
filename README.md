@@ -73,6 +73,7 @@ npm run agent -- next-key
 npm run agent -- create --title "Harden login rate limits" --repo web-app --ready
 npm run agent -- claim-next --repo web-app
 npm run agent -- progress TASK-101 --note "Implementation started"
+npm run agent -- heartbeat TASK-101 --state running --step "Writing tests"
 npm run agent -- extend TASK-101 --lease-minutes 60
 npm run agent -- reclaim TASK-101
 npm run agent -- release TASK-101
@@ -93,6 +94,13 @@ npm run agent -- closeout TASK-101 --repo your-org/web-app --pr 1   # verifies t
   `agentRunHealth` (`healthy`, `expiring`, `stale`, `incomplete`, `failed`, or
   `idle`). Authenticated callers can `extend` the lease, `reclaim` a stuck run,
   or `release` it back to `ready_for_agent` without waiting the lease out.
+- **Packet room** — each packet has a durable Room timeline
+  (`lifecycle`, `human_note`, `heartbeat`, `github`) that survives the 20-event
+  `agentEvents` cap. File storage appends `manage/data/packet-events.jsonl`;
+  Firestore uses `MANAGE_FIRESTORE_PACKET_EVENT_COLLECTION` (default
+  `${MANAGE_FIRESTORE_COLLECTION}_packet_events`). Agents may heartbeat and
+  ingest allowlisted GitHub signals; operator notes require
+  `workspace:update`. Heartbeats do not extend claims or leases.
 - **Status writeback** — `POST /api/agent/tasks/{key}/status` records
   `needs_review` / `done` / `blocked` with branch, PR, tests run, files changed,
   blockers, and next steps, and appends to a per-packet event log.

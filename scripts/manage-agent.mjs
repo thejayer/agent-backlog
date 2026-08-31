@@ -26,6 +26,7 @@ Commands:
   reclaim <KEY>           Reclaim a stale, incomplete, or failed run (operator session).
   release <KEY>           Release the observed run to the ready queue (operator session).
   progress <KEY>          Write status=in_progress.
+  heartbeat <KEY>         Record an append-only run heartbeat without extending the lease.
   review <KEY>            Write status=needs_review.
   blocked <KEY>           Write status=blocked.
   status <KEY>            Write an explicit status with --status.
@@ -43,6 +44,8 @@ Common options:
   --label <label>         Label filter for claim-next.
   --agent-run-id <id>     Agent run id for status writes. Defaults to current task value.
   --note <text>           Status note.
+  --state <state>         Heartbeat state: running, waiting, blocked, idle, failed.
+  --step <text>           Heartbeat current step.
   --branch <name>         GitHub branch recorded on the packet.
   --pr <url|number>       GitHub PR URL/number/ref recorded on the packet.
   --test <text>           Repeatable testsRun entry.
@@ -65,6 +68,7 @@ Examples:
   npm run manage:agent -- reclaim TASK-113
   npm run manage:agent -- release TASK-113
   npm run manage:agent -- progress TASK-113 --note "Implementation started"
+  npm run manage:agent -- heartbeat TASK-113 --state running --step "Writing tests"
   npm run manage:agent -- review TASK-113 --branch codex/foo --pr https://github.com/your-org/web-app/pull/107 --test "npm test - passed" --file src/App.jsx
   npm run manage:agent -- closeout TASK-113 --repo your-org/web-app --pr 107
   npm run manage:agent -- validate --cmd "npm test" --cmd "npm run build"
@@ -459,6 +463,20 @@ async function recover(positionals, options, action) {
   print(`${action[0].toUpperCase()}${action.slice(1)} recovery`, payload, options);
 }
 
+async function heartbeat(positionals, options) {
+  const key = taskKey(positionals);
+  const workItem = options.dryRun ? {} : await getTask(key, options);
+  const body = {
+    agent: options.agent || process.env.MANAGE_AGENT || DEFAULT_AGENT,
+    agentRunId: options.agentRunId || workItem.agentRunId || "",
+    state: options.state || "running",
+    currentStep: options.step || options.currentStep || "",
+    note: options.note || options.step || options.currentStep || "",
+  };
+  const payload = await requestManage(`/api/agent/tasks/${encodeURIComponent(key)}/heartbeat`, { method: "POST", body }, options);
+  print("Recorded heartbeat", payload, options);
+}
+
 async function writeStatus(positionals, options, explicitStatus) {
   const key = taskKey(positionals);
   const status = explicitStatus || options.status;
@@ -575,6 +593,7 @@ async function main() {
   if (command === "reclaim") return recover(positionals, options, "reclaim");
   if (command === "release") return recover(positionals, options, "release");
   if (command === "progress") return writeStatus(positionals, options, "in_progress");
+  if (command === "heartbeat") return heartbeat(positionals, options);
   if (command === "review") return writeStatus(positionals, options, "needs_review");
   if (command === "blocked") return writeStatus(positionals, options, "blocked");
   if (command === "status") return writeStatus(positionals, options);

@@ -869,6 +869,7 @@ describe("getStorageStatus", () => {
     expect(status.files.githubCache).toBe(path.join(path.resolve(dataDir), "github-cache.json"));
     expect(status.files.initiatives).toBe(path.join(path.resolve(dataDir), "initiatives.json"));
     expect(status.files.savedViews).toBe(path.join(path.resolve(dataDir), "saved-views.json"));
+    expect(status.files.packetEvents).toBe(path.join(path.resolve(dataDir), "packet-events.jsonl"));
     expect(status.backups.retention).toBe(25);
     expect(status.backups.automatic).toBe(false);
   });
@@ -890,6 +891,7 @@ describe("getStorageStatus", () => {
       collections: {
         workItems: FIRESTORE_WORK_ITEMS_COLLECTION,
         snapshots: FIRESTORE_SNAPSHOT_COLLECTION,
+        packetEvents: `${FIRESTORE_COLLECTION}_packet_events`,
       },
       documents: {
         legacyWorkItems: "work-items",

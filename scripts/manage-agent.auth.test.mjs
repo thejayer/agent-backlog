@@ -59,4 +59,27 @@ describe("lifecycle CLI create and doctor", () => {
     });
     expect(JSON.stringify(payload)).not.toMatch(/commercestreet|csc-crm-io|csc-workspace|CSC-/i);
   });
+
+  it("dry-runs heartbeat against the packet room route with TASK keys", () => {
+    const result = runCli([
+      "heartbeat",
+      "TASK-101",
+      "--dry-run",
+      "--json",
+      "--state",
+      "running",
+      "--step",
+      "Writing tests",
+    ]);
+    const payload = JSON.parse(result.stdout);
+
+    expect(result.status).toBe(0);
+    expect(payload.request.method).toBe("POST");
+    expect(payload.request.url).toBe("http://127.0.0.1:5186/api/agent/tasks/TASK-101/heartbeat");
+    expect(payload.request.body).toMatchObject({
+      state: "running",
+      currentStep: "Writing tests",
+    });
+    expect(JSON.stringify(payload)).not.toMatch(/commercestreet|csc-crm-io|csc-workspace|CSC-/i);
+  });
 });

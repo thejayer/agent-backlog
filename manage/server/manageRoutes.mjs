@@ -14,6 +14,12 @@ import {
 } from "./auth.mjs";
 import { authorizeManageRequest, managePermissions, requireBrowserWriteProtection, roleHasPermission } from "./authorization.mjs";
 import {
+  ingestGithubPacketSignal,
+  loadPacketRoom,
+  recordAgentHeartbeat,
+  recordHumanPacketNote,
+} from "./packetRoom.mjs";
+import {
   findGithubMatchesForItem,
   findMergedPullRequest,
   hasGithubMatches,
@@ -83,7 +89,7 @@ function redirect(res, location, cookies = []) {
   res.end();
 }
 
-async function readJsonBody(req) {
+async function readRawBody(req) {
   const chunks = [];
   let size = 0;
 
@@ -97,12 +103,21 @@ async function readJsonBody(req) {
     chunks.push(chunk);
   }
 
-  if (chunks.length === 0) {
-    return {};
-  }
+  return Buffer.concat(chunks).toString("utf8");
+}
 
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+async function readJsonBody(req) {
+  const raw = (await readRawBody(req)).trim();
   return raw ? JSON.parse(raw) : {};
+}
+
+function requestActor(authorization, body = {}) {
+  const user = authorization?.session?.user || {};
+  return {
+    login: String(user.login || "").trim(),
+    agent: String(body.agent || user.login || "").trim(),
+    agentRunId: String(body.agentRunId || "").trim(),
+  };
 }
 
 function methodAllowed(res, methods) {
@@ -926,6 +941,78 @@ async function handleRoute(req, res, baseUrl) {
       action: result.action,
       workItems: result.workItems,
     });
+    return true;
+  }
+
+  const eventsMatch = pathname.match(/^\/api\/agent\/tasks\/([^/]+)\/events$/);
+  if (eventsMatch) {
+    if (method !== "GET") {
+      methodAllowed(res, ["GET"]);
+      return true;
+    }
+
+    const room = await loadPacketRoom(decodeURIComponent(eventsMatch[1]));
+    sendJson(res, 200, {
+      workItemKey: room.workItem.key,
+      events: room.events,
+      heartbeat: room.heartbeat,
+      migrated: room.migrated,
+    });
+    return true;
+  }
+
+  const heartbeatMatch = pathname.match(/^\/api\/agent\/tasks\/([^/]+)\/heartbeat$/);
+  if (heartbeatMatch) {
+    if (method !== "POST") {
+      methodAllowed(res, ["POST"]);
+      return true;
+    }
+
+    const body = withMutationMetadata(req, await readJsonBody(req));
+    const result = await recordAgentHeartbeat(
+      decodeURIComponent(heartbeatMatch[1]),
+      body,
+      requestActor(authorization, body),
+    );
+    sendJson(res, 200, result);
+    return true;
+  }
+
+  const notesMatch = pathname.match(/^\/api\/agent\/tasks\/([^/]+)\/notes$/);
+  if (notesMatch) {
+    if (method !== "POST") {
+      methodAllowed(res, ["POST"]);
+      return true;
+    }
+
+    const body = withMutationMetadata(req, await readJsonBody(req));
+    const event = await recordHumanPacketNote(
+      decodeURIComponent(notesMatch[1]),
+      body,
+      requestActor(authorization, body),
+    );
+    sendJson(res, 201, { event });
+    return true;
+  }
+
+  if (pathname === "/api/packet-events/github") {
+    if (method !== "POST") {
+      methodAllowed(res, ["POST"]);
+      return true;
+    }
+
+    const rawBody = await readRawBody(req);
+    const payload = rawBody.trim() ? JSON.parse(rawBody) : {};
+    const headers = Object.fromEntries(
+      Object.entries(req.headers || {}).map(([header, value]) => [header.toLowerCase(), Array.isArray(value) ? value[0] : value]),
+    );
+    const result = await ingestGithubPacketSignal({
+      payload,
+      headers,
+      rawBody,
+      actor: requestActor(authorization, payload),
+    });
+    sendJson(res, 200, result);
     return true;
   }
 

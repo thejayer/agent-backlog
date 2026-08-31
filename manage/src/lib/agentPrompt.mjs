@@ -654,6 +654,9 @@ export function buildAgentBootstrap({
     claim: endpoint(baseUrl, "/api/agent/tasks/{key}/claim"),
     status: endpoint(baseUrl, "/api/agent/tasks/{key}/status"),
     recovery: endpoint(baseUrl, "/api/agent/tasks/{key}/recovery"),
+    events: endpoint(baseUrl, "/api/agent/tasks/{key}/events"),
+    heartbeat: endpoint(baseUrl, "/api/agent/tasks/{key}/heartbeat"),
+    githubSignals: endpoint(baseUrl, "/api/packet-events/github"),
   };
 
   return {

@@ -124,6 +124,10 @@
   font-weight: 800;
 }
 
+.next-packet-icon {
+  display: none;
+}
+
 .next-packet small {
   color: var(--manage-muted);
   font-size: 12px;

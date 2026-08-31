@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { ModalDialog } from "./ModalDialog.jsx";
 
-export const themeOptions = ["light", "dark"];
+export const themeOptions = ["light", "dark", "glass"];
+export const themeLabels = { light: "Light", dark: "Dark", glass: "Glass" };
 export const densityOptions = [
   { id: "compact", label: "Compact" },
   { id: "regular", label: "Regular" },
@@ -68,11 +69,8 @@ function OperatorControls({
   onThemeModeChange,
   onReset,
   onLogout,
-  IconComponent,
   initialFocus = false,
 }) {
-  const nextThemeMode = themeMode === "dark" ? "light" : "dark";
-
   return (
     <>
       <label className="shell-control">
@@ -90,15 +88,16 @@ function OperatorControls({
           ))}
         </select>
       </label>
-      <button
-        type="button"
-        className="button secondary shell-toggle"
-        onClick={() => onThemeModeChange(nextThemeMode)}
-        aria-label={`Switch to ${nextThemeMode} theme`}
-      >
-        <IconComponent name={themeMode === "dark" ? "sun" : "moon"} />
-        {themeMode === "dark" ? "Light" : "Dark"}
-      </button>
+      <label className="shell-control shell-theme-control">
+        <span>Theme</span>
+        <select aria-label="Theme" value={themeMode} onChange={(event) => onThemeModeChange(event.target.value)}>
+          {themeOptions.map((option) => (
+            <option key={option} value={option}>
+              {themeLabels[option]}
+            </option>
+          ))}
+        </select>
+      </label>
       <div className="session-chip" title={sessionUser?.login || sessionMode}>
         {sessionMode === "github" ? `GitHub: ${sessionUser?.login || "signed in"}` : "Token session"}
       </div>
@@ -196,7 +195,16 @@ export function ManageShell({
 
         <div className="sidebar-footer">
           <div className="footer-label">Next ready packet</div>
-          <button type="button" className="next-packet" onClick={() => onOpenPacket(nextItem?.key)} disabled={!nextItem}>
+          <button
+            type="button"
+            className="next-packet"
+            onClick={() => onOpenPacket(nextItem?.key)}
+            disabled={!nextItem}
+            aria-label={nextItem ? `Next ready packet ${nextItem.key}` : "No ready packet"}
+          >
+            <span className="next-packet-icon" aria-hidden="true">
+              <IconComponent name="queue" />
+            </span>
             <span>{nextItem?.key || "None"}</span>
             <small>{nextItem ? `${nextItem.repo} / ${nextItem.title}` : "No ready item"}</small>
           </button>
@@ -238,7 +246,6 @@ export function ManageShell({
                 onThemeModeChange={onThemeModeChange}
                 onReset={onReset}
                 onLogout={onLogout}
-                IconComponent={IconComponent}
               />
             </div>
           </div>
@@ -282,7 +289,6 @@ export function ManageShell({
               onThemeModeChange={onThemeModeChange}
               onReset={resetFromSettings}
               onLogout={logoutFromSettings}
-              IconComponent={IconComponent}
               initialFocus
             />
           </div>

@@ -75,6 +75,24 @@ test("@a11y shell and packet composer pass the blocking accessibility gate", asy
   await expect(trigger).toBeFocused();
 });
 
+test("@a11y glass theme keeps shell and packet composer above the contrast gate", async ({ page }, testInfo) => {
+  await page.goto("/");
+  const { controls } = await openOperatorControls(page);
+  await controls.getByLabel("Theme").selectOption("glass");
+  await expect(page.locator("html")).toHaveAttribute("data-manage-theme", "glass");
+  if (await page.getByRole("dialog", { name: "Operator settings" }).isVisible()) {
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Operator settings" })).toBeHidden();
+  }
+  await expectNoBlockingViolations(page, testInfo, "shell-glass");
+
+  const trigger = page.getByRole("button", { name: "New packet" });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "New work packet" });
+  await expect(dialog).toBeVisible();
+  await expectNoBlockingViolations(page, testInfo, "packet-composer-glass");
+});
+
 test("@a11y initiative and destructive dialogs preserve keyboard-safe modal behavior", async ({ page }, testInfo) => {
   await page.goto("/");
   const initiativesNav = page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Initiatives" });

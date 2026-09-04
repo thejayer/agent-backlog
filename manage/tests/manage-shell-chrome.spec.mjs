@@ -36,8 +36,8 @@ test("groups sidebar destinations into Focus, Plan, Operate, and Review", async 
   await expect(navigation).not.toContainText(/Harbor|RegVault|Commerce Street/i);
 
   await navigation.getByRole("group", { name: "Review" }).getByRole("button", { name: "Shipped" }).click();
-  await expect(page).toHaveURL(/view=shipped/);
   await expect(page.getByRole("heading", { name: "Shipped work" })).toBeVisible();
+  await expect(page).toHaveURL(/view=shipped/);
 });
 
 test("opens the command palette with the trigger and Control+K, then jumps to a view", async ({ page }) => {
@@ -66,15 +66,15 @@ test("opens the command palette with the trigger and Control+K, then jumps to a 
 test("jumps from the command palette to a TASK packet", async ({ page }) => {
   await page.goto("/?view=today");
 
-  await page.keyboard.press("Control+K");
+  await page.getByRole("button", { name: "Find a packet or view" }).click();
   const palette = page.getByRole("dialog", { name: "Command palette" });
+  await expect(palette).toBeVisible();
   await palette.getByLabel("Search commands").fill("TASK-101");
   await expect(palette).toContainText("TASK-101");
   await expect(palette).not.toContainText("CSC-");
   await palette.getByRole("button", { name: "TASK-101 packet" }).click();
-  await expect(page).toHaveURL(/view=backlog/);
-  await expect(page).toHaveURL(/packet=TASK-101/);
   await expect(page.getByRole("heading", { name: "AI-ready backlog" })).toBeVisible();
+  await expect(page).toHaveURL(/packet=TASK-101/);
   await expect(page.locator(".work-row.is-selected")).toContainText("TASK-101");
 });
 

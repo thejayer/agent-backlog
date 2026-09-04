@@ -275,7 +275,13 @@ export function ManageShell({
 
         <nav className="side-nav" aria-label="Main navigation">
           {groups.map((group) => (
-            <div className="nav-group" role="group" aria-label={group.label} key={group.label}>
+            <div
+              className="nav-group"
+              role="group"
+              aria-label={group.label}
+              data-nav-count={group.items.length}
+              key={group.label}
+            >
               <span className="nav-group-label">{group.label}</span>
               {group.items.map((item) => (
                 <button

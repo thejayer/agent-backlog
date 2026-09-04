@@ -430,16 +430,24 @@
   }
 
   .side-nav {
-    display: flex;
-    grid-template-columns: none;
-    overflow-x: auto;
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 4px;
   }
 
   .nav-group {
-    display: flex;
-    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: subgrid;
     gap: 4px;
     margin: 0;
+  }
+
+  .nav-group[data-nav-count="1"] {
+    grid-column: span 1;
+  }
+
+  .nav-group[data-nav-count="2"] {
+    grid-column: span 2;
   }
 
   .nav-group-label {

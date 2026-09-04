@@ -28,12 +28,14 @@ describe("glass appearance sources stay unbranded", () => {
     const tokens = readFileSync(join(here, "..", "tokens.css"), "utf8");
     const glass = readFileSync(join(here, "glass.css"), "utf8");
     const shell = readFileSync(join(here, "..", "components", "ManageShell.jsx"), "utf8");
+    const preferences = readFileSync(join(here, "..", "lib", "shellPreferences.mjs"), "utf8");
     expect(tokens).not.toMatch(leftoverThemeGlass);
     expect(glass).not.toMatch(leftoverThemeGlass);
     expect(glass).toContain('[data-manage-appearance="glass"]');
     expect(glass).toContain('[data-manage-appearance="glass"][data-manage-theme="dark"]');
     expect(glass).not.toMatch(cscOnlySelectors);
-    expect(shell).toContain("standard");
+    expect(preferences).toContain('"standard"');
+    expect(preferences).toContain("Standard");
     expect(shell).toContain("Appearance");
     expect(shell).not.toContain("Harbor");
   });

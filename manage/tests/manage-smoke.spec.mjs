@@ -968,7 +968,7 @@ test("routes shell navigation to focused workspaces", async ({ page }) => {
 
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Agents" }).click();
   await expect(page.getByRole("heading", { name: "Agent activity" })).toBeVisible();
-  await expect(page.getByLabel("Agent activity")).toContainText("Active claims");
+  await expect(page.getByLabel("Agent activity")).toContainText("Live runs");
 
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: "Shipped" }).click();
   await expect(page.getByRole("heading", { name: "Shipped work" })).toBeVisible();

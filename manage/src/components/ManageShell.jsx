@@ -1,8 +1,13 @@
 import React, { useEffect, useState } from "react";
+import {
+  appearanceLabels,
+  appearanceOptions,
+  themeLabels,
+  themeOptions,
+} from "../lib/shellPreferences.mjs";
 import { ModalDialog } from "./ModalDialog.jsx";
 
-export const themeOptions = ["light", "dark", "glass"];
-export const themeLabels = { light: "Light", dark: "Dark", glass: "Glass" };
+export { appearanceLabels, appearanceOptions, themeLabels, themeOptions };
 export const densityOptions = [
   { id: "compact", label: "Compact" },
   { id: "regular", label: "Regular" },
@@ -60,6 +65,7 @@ export const viewCopy = {
 function OperatorControls({
   densityMode,
   themeMode,
+  appearanceMode,
   sessionMode,
   sessionUser,
   syncState,
@@ -67,6 +73,7 @@ function OperatorControls({
   loadState,
   onDensityModeChange,
   onThemeModeChange,
+  onAppearanceModeChange,
   onReset,
   onLogout,
   initialFocus = false,
@@ -84,6 +91,20 @@ function OperatorControls({
           {densityOptions.map((option) => (
             <option key={option.id} value={option.id}>
               {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="shell-control shell-appearance-control">
+        <span>Appearance</span>
+        <select
+          aria-label="Appearance"
+          value={appearanceMode}
+          onChange={(event) => onAppearanceModeChange(event.target.value)}
+        >
+          {appearanceOptions.map((option) => (
+            <option key={option} value={option}>
+              {appearanceLabels[option]}
             </option>
           ))}
         </select>
@@ -120,6 +141,7 @@ export function ManageShell({
   nextItem,
   densityMode,
   themeMode,
+  appearanceMode,
   sessionMode,
   sessionUser,
   syncState,
@@ -130,6 +152,7 @@ export function ManageShell({
   onCreate,
   onDensityModeChange,
   onThemeModeChange,
+  onAppearanceModeChange,
   onReset,
   onLogout,
   IconComponent,
@@ -237,6 +260,7 @@ export function ManageShell({
               <OperatorControls
                 densityMode={densityMode}
                 themeMode={themeMode}
+                appearanceMode={appearanceMode}
                 sessionMode={sessionMode}
                 sessionUser={sessionUser}
                 syncState={syncState}
@@ -244,6 +268,7 @@ export function ManageShell({
                 loadState={loadState}
                 onDensityModeChange={onDensityModeChange}
                 onThemeModeChange={onThemeModeChange}
+                onAppearanceModeChange={onAppearanceModeChange}
                 onReset={onReset}
                 onLogout={onLogout}
               />
@@ -280,6 +305,7 @@ export function ManageShell({
             <OperatorControls
               densityMode={densityMode}
               themeMode={themeMode}
+              appearanceMode={appearanceMode}
               sessionMode={sessionMode}
               sessionUser={sessionUser}
               syncState={syncState}
@@ -287,6 +313,7 @@ export function ManageShell({
               loadState={loadState}
               onDensityModeChange={onDensityModeChange}
               onThemeModeChange={onThemeModeChange}
+              onAppearanceModeChange={onAppearanceModeChange}
               onReset={resetFromSettings}
               onLogout={logoutFromSettings}
               initialFocus

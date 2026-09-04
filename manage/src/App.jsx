@@ -71,8 +71,13 @@ import {
   savedBacklogState,
   viewStateFromSavedBacklog,
 } from "./lib/manageViewState.mjs";
-import { ManageShell, densityOptions, themeOptions } from "./components/ManageShell.jsx";
+import { ManageShell, densityOptions } from "./components/ManageShell.jsx";
 import { ModalDialog } from "./components/ModalDialog.jsx";
+import {
+  readShellPreference,
+  resolveThemeAndAppearance,
+  writeShellPreference,
+} from "./lib/shellPreferences.mjs";
 import { useManageNavigation } from "./components/useManageNavigation.mjs";
 import { BacklogRoute } from "./features/backlog/BacklogRoute.jsx";
 import {
@@ -80,31 +85,6 @@ import {
   normalizeLabel,
   useBacklogController,
 } from "./features/backlog/useBacklogController.mjs";
-
-function readShellPreference(key, fallback, allowedValues) {
-  if (typeof window === "undefined") {
-    return fallback;
-  }
-
-  try {
-    const value = window.sessionStorage?.getItem(key);
-    return allowedValues.includes(value) ? value : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeShellPreference(key, value) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  try {
-    window.sessionStorage?.setItem(key, value);
-  } catch {
-    // Session storage can be unavailable in locked-down browser contexts.
-  }
-}
 
 const repoOptions = repositories.map((repo) => repo.id);
 const agentSecretConfig = {
@@ -658,13 +638,16 @@ export default function App() {
   const [sessionMode, setSessionMode] = useState("local");
   const [sessionInfo, setSessionInfo] = useState(null);
   const [authError, setAuthError] = useState("");
-  const [themeMode, setThemeMode] = useState(() => readShellPreference("manage-theme", "light", themeOptions));
+  const [themeMode, setThemeMode] = useState(() => resolveThemeAndAppearance().theme);
+  const [appearanceMode, setAppearanceMode] = useState(() => resolveThemeAndAppearance().appearance);
 
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = themeMode;
     document.documentElement.dataset.manageTheme = themeMode;
+    document.documentElement.dataset.manageAppearance = appearanceMode;
     writeShellPreference("manage-theme", themeMode);
-  }, [themeMode]);
+    writeShellPreference("manage-appearance", appearanceMode);
+  }, [themeMode, appearanceMode]);
 
   useEffect(() => {
     let canceled = false;
@@ -741,7 +724,9 @@ export default function App() {
       sessionMode={sessionMode}
       sessionUser={sessionInfo?.user}
       themeMode={themeMode}
+      appearanceMode={appearanceMode}
       onThemeModeChange={setThemeMode}
+      onAppearanceModeChange={setAppearanceMode}
     />
   );
 }
@@ -754,7 +739,15 @@ function readInitialViewState() {
   return parseManageViewState(window.location.search);
 }
 
-function ManageApp({ onLogout, sessionMode, sessionUser, themeMode, onThemeModeChange }) {
+function ManageApp({
+  onLogout,
+  sessionMode,
+  sessionUser,
+  themeMode,
+  appearanceMode,
+  onThemeModeChange,
+  onAppearanceModeChange,
+}) {
   const initialView = readInitialViewState();
   const historyIntentRef = useRef("replace");
   const skipUrlWriteRef = useRef(false);
@@ -1906,6 +1899,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser, themeMode, onThemeModeC
       nextItem={nextItem}
       densityMode={densityMode}
       themeMode={themeMode}
+      appearanceMode={appearanceMode}
       sessionMode={sessionMode}
       sessionUser={sessionUser}
       syncState={syncState}
@@ -1916,6 +1910,7 @@ function ManageApp({ onLogout, sessionMode, sessionUser, themeMode, onThemeModeC
       onCreate={() => (activeNav === "initiatives" ? setShowInitiativeComposer(true) : setShowComposer(true))}
       onDensityModeChange={setDensityMode}
       onThemeModeChange={onThemeModeChange}
+      onAppearanceModeChange={onAppearanceModeChange}
       onReset={requestResetStore}
       onLogout={onLogout}
       IconComponent={Icon}

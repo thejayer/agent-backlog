@@ -125,46 +125,6 @@
   --shadow-xl: 0 30px 60px -34px rgba(0, 0, 0, 0.7);
 }
 
-[data-theme="glass"] {
-  color-scheme: dark;
-
-  --bg-root: #070a11;
-  --bg-primary: rgba(255, 255, 255, 0.07);
-  --bg-secondary: rgba(255, 255, 255, 0.05);
-  --bg-tertiary: rgba(255, 255, 255, 0.11);
-  --border-primary: rgba(255, 255, 255, 0.14);
-  --border-secondary: rgba(255, 255, 255, 0.24);
-  --text-primary: #eaf0f8;
-  --text-secondary: rgba(234, 240, 248, 0.82);
-  --text-muted: rgba(234, 240, 248, 0.60);
-  --text-on-accent: #07101e;
-  --text-on-danger: #07101e;
-  --text-on-warning: #07101e;
-  --text-on-success: #07101e;
-  --accent-blue: #8fc0ff;
-  --accent-purple: #c9a6f5;
-  --accent-green: #7ef0a8;
-  --accent-red: #ff9a9a;
-  --accent-orange: #f5c451;
-  --primary-hover: #b7d7ff;
-  --overlay-bg: rgba(7, 10, 17, 0.60);
-  --overlay-muted: rgba(7, 10, 17, 0.46);
-  --overlay-strong: rgba(7, 10, 17, 0.78);
-  --surface-wash: rgba(255, 255, 255, 0.025);
-  --surface-hover: rgba(255, 255, 255, 0.07);
-  --canvas-contrast: #ffffff;
-  --brand: #3a6fc0;
-  --brand-ink: #ffffff;
-  --accent-soft: rgba(143, 192, 255, 0.16);
-  --accent-rust: #f5c451;
-  --link: #8fc0ff;
-  --focus-ring: rgba(143, 192, 255, 0.46);
-  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.03);
-  --shadow-md: 0 12px 30px rgba(0, 0, 0, 0.24);
-  --shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.34);
-  --shadow-xl: 0 30px 80px rgba(0, 0, 0, 0.56);
-}
-
 body {
   font-family: var(--font-sans);
 }

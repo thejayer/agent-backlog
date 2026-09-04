@@ -75,22 +75,36 @@ test("@a11y shell and packet composer pass the blocking accessibility gate", asy
   await expect(trigger).toBeFocused();
 });
 
-test("@a11y glass theme keeps shell and packet composer above the contrast gate", async ({ page }, testInfo) => {
-  await page.goto("/");
+async function applyAppearance(page, { appearance, theme }) {
   const { controls } = await openOperatorControls(page);
-  await controls.getByLabel("Theme").selectOption("glass");
-  await expect(page.locator("html")).toHaveAttribute("data-manage-theme", "glass");
+  await controls.getByLabel("Appearance").selectOption(appearance);
+  await controls.getByLabel("Theme").selectOption(theme);
+  await expect(page.locator("html")).toHaveAttribute("data-manage-appearance", appearance);
+  await expect(page.locator("html")).toHaveAttribute("data-manage-theme", theme);
   if (await page.getByRole("dialog", { name: "Operator settings" }).isVisible()) {
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog", { name: "Operator settings" })).toBeHidden();
   }
-  await expectNoBlockingViolations(page, testInfo, "shell-glass");
+}
+
+test("@a11y glass appearance keeps light and dark shell above the contrast gate", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await applyAppearance(page, { appearance: "glass", theme: "light" });
+  await expectNoBlockingViolations(page, testInfo, "shell-glass-light");
 
   const trigger = page.getByRole("button", { name: "New packet" });
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "New work packet" });
   await expect(dialog).toBeVisible();
-  await expectNoBlockingViolations(page, testInfo, "packet-composer-glass");
+  await expectNoBlockingViolations(page, testInfo, "packet-composer-glass-light");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+
+  await applyAppearance(page, { appearance: "glass", theme: "dark" });
+  await expectNoBlockingViolations(page, testInfo, "shell-glass-dark");
+  await trigger.click();
+  await expect(dialog).toBeVisible();
+  await expectNoBlockingViolations(page, testInfo, "packet-composer-glass-dark");
 });
 
 test("@a11y initiative and destructive dialogs preserve keyboard-safe modal behavior", async ({ page }, testInfo) => {

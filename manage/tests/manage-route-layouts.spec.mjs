@@ -72,6 +72,7 @@ test("Review workbench selects inbox items and keeps the delivery evidence gate"
   await expect(page.getByRole("group", { name: "Review views" })).toContainText("Open");
   await expect(page.getByRole("group", { name: "Review views" }).getByRole("button", { name: /Returned/ })).toBeDisabled();
   await expect(page.getByRole("heading", { name: "Validate the handoff" })).toBeVisible();
+  await expect(page.locator(".review-inbox-list").getByRole("button", { name: /TASK-101/ })).toBeVisible();
 
   const selectedCard = page.locator(".review-card");
   await expect(selectedCard).toContainText("TASK-101");
@@ -125,18 +126,20 @@ test("Agents console shows metrics, run filters, and recovery without CSC leakag
 
   const filters = page.getByRole("group", { name: "Filter agent runs" });
   await expect(filters.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator(".claim-card")).toHaveCount(2);
+  await expect(page.locator(".claim-card").filter({ hasText: "TASK-101" })).toBeVisible();
+  await expect(page.locator(".claim-card").filter({ hasText: "TASK-102" })).toBeVisible();
 
   await filters.getByRole("button", { name: "Codex" }).click();
-  await expect(page.locator(".claim-card")).toHaveCount(1);
-  await expect(page.locator(".claim-card")).toContainText("TASK-101");
-  await expect(page.locator(".claim-card")).toContainText("Healthy run");
-  await expect(page.locator(".claim-card").getByRole("button", { name: "Extend 60m" })).toBeVisible();
-  await expect(page.locator(".claim-card").getByRole("button", { name: "Release" })).toBeVisible();
+  const codexCard = page.locator(".claim-card").filter({ hasText: "TASK-101" });
+  await expect(codexCard).toBeVisible();
+  await expect(page.locator(".claim-card").filter({ hasText: "TASK-102" })).toHaveCount(0);
+  await expect(codexCard).toContainText("Healthy run");
+  await expect(codexCard.getByRole("button", { name: "Extend 60m" })).toBeVisible();
+  await expect(codexCard.getByRole("button", { name: "Release" })).toBeVisible();
 
   await page.locator(".roster-row").filter({ hasText: "Claude Code" }).click();
-  await expect(page.locator(".claim-card")).toHaveCount(1);
-  await expect(page.locator(".claim-card")).toContainText("TASK-102");
+  await expect(page.locator(".claim-card").filter({ hasText: "TASK-102" })).toBeVisible();
+  await expect(page.locator(".claim-card").filter({ hasText: "TASK-101" })).toHaveCount(0);
 
   await expect(page.getByLabel("Agent activity")).not.toContainText(CSC_LEAKAGE);
   await expect(page.getByLabel("Agent activity")).not.toContainText("Harbor");

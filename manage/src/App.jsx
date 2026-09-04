@@ -3229,12 +3229,6 @@ function MiniRepoHealth({ rows }) {
 function ReviewQueue({ items, selectedKey, onSelectPacket, onUpdatePacket, onOpenPacket, onRefreshEvidence, githubState }) {
   const selectedReviewItem = items.find((item) => item.key === selectedKey) || items[0];
 
-  useEffect(() => {
-    if (items.length > 0 && selectedReviewItem && selectedReviewItem.key !== selectedKey) {
-      onSelectPacket?.(selectedReviewItem.key);
-    }
-  }, [items, selectedKey, selectedReviewItem, onSelectPacket]);
-
   if (items.length === 0) {
     return (
       <section className="overview-panel review-empty" aria-label="Review queue">

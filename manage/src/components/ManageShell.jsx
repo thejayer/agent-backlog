@@ -203,6 +203,7 @@ export function ManageShell({
       }
 
       if (event.key === "Escape") {
+        if (event.defaultPrevented) return;
         setShellMenuOpen(false);
       }
     }

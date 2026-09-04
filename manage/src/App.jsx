@@ -1939,6 +1939,7 @@ function ManageApp({
             nextItem={nextItem}
             activity={recentAgentActivity}
             repoHealthRows={miniRepoHealth}
+            activeClaims={activeClaims}
             attentionItems={attentionItems}
             loadState={loadState}
             reconciliationSyncState={reconciliationSyncState}
@@ -2207,6 +2208,8 @@ function ManageApp({
         {activeNav === "review" ? (
           <ReviewQueue
             items={reviewItems}
+            selectedKey={selectedKey}
+            onSelectPacket={(key) => setSelectedKey(key, { history: "replace" })}
             onUpdatePacket={updatePacket}
             onOpenPacket={openPacket}
             onRefreshEvidence={refreshReviewEvidence}
@@ -3026,6 +3029,7 @@ function TodayOverview({
   nextItem,
   activity,
   repoHealthRows,
+  activeClaims = [],
   attentionItems,
   loadState,
   reconciliationSyncState,
@@ -3041,24 +3045,19 @@ function TodayOverview({
   claimState,
   onNavigate,
 }) {
+  const failedRepoCount = repoHealthRows.filter((repo) => repo.failedRuns > 0).length;
+
   return (
     <>
-      <TodayAttentionInbox
-        items={attentionItems}
-        loadState={loadState}
-        reconciliationSyncState={reconciliationSyncState}
-        reconciliationActionState={reconciliationActionState}
-        reconciliationMessage={reconciliationMessage}
-        reconciliationAction={reconciliationAction}
-        agentRecoveryAction={agentRecoveryAction}
-        agentRecoveryMessage={agentRecoveryMessage}
-        onAction={onAttentionAction}
-        onOpenItem={onOpenAttention}
-      />
-
-      <section className="today-hero" aria-label="Today overview">
+      <section className="today-command" aria-label="Today overview">
         <article className="today-next">
-          <span className="tn-eyebrow">Next ready packet</span>
+          <div className="today-card-heading">
+            <div>
+              <span className="tn-eyebrow">Next ready packet</span>
+              <strong>Keep delivery moving</strong>
+            </div>
+            <span className="today-order">01</span>
+          </div>
           {nextItem ? (
             <>
               <div className="tn-key">{nextItem.key}</div>
@@ -3086,19 +3085,48 @@ function TodayOverview({
           )}
         </article>
 
-        <article className="today-pulse">
-          <h3>Backlog pulse</h3>
-          <PulseRow label="Ready for agent" value={stats.readyCount} />
-          <PulseRow label="In progress" value={stats.inProgressCount} />
-          <PulseRow label="Needs review" value={stats.reviewCount} />
-          <PulseRow label="Blocked" value={stats.blockedCount} />
-        </article>
+        <div className="today-signals" aria-label="Operating signals">
+          <button type="button" className="signal-card signal-review" onClick={() => onNavigate("review")}>
+            <span>Review queue</span>
+            <strong>{stats.reviewCount}</strong>
+            <small>Awaiting sign-off</small>
+          </button>
+          <button type="button" className="signal-card signal-running" onClick={() => onNavigate("agents")}>
+            <span>Agent runs</span>
+            <strong>{activeClaims.length}</strong>
+            <small>{activeClaims.length === 1 ? "Lease in motion" : "Leases in motion"}</small>
+          </button>
+          <button type="button" className="signal-card signal-ready" onClick={() => onNavigate("backlog")}>
+            <span>Ready work</span>
+            <strong>{stats.readyCount}</strong>
+            <small>Available to claim</small>
+          </button>
+          <button type="button" className="signal-card signal-blocked" onClick={() => onNavigate("repos")}>
+            <span>Repo alerts</span>
+            <strong>{failedRepoCount}</strong>
+            <small>Failed checks</small>
+          </button>
+        </div>
       </section>
 
-      <div className="today-cols">
+      <div className="today-operations">
+        <TodayAttentionInbox
+          items={attentionItems}
+          loadState={loadState}
+          reconciliationSyncState={reconciliationSyncState}
+          reconciliationActionState={reconciliationActionState}
+          reconciliationMessage={reconciliationMessage}
+          reconciliationAction={reconciliationAction}
+          agentRecoveryAction={agentRecoveryAction}
+          agentRecoveryMessage={agentRecoveryMessage}
+          onAction={onAttentionAction}
+          onOpenItem={onOpenAttention}
+        />
+
         <section className="overview-panel" aria-label="Recent agent activity">
           <div className="section-title-row">
             <div>
+              <span className="section-kicker">Execution</span>
               <h2>Recent agent activity</h2>
               <p>{activity.length} latest event{activity.length === 1 ? "" : "s"} across packet writebacks.</p>
             </div>
@@ -3106,22 +3134,40 @@ function TodayOverview({
               View agents
             </button>
           </div>
-          <ActivityFeed events={activity} onOpenPacket={onOpenPacket} />
-        </section>
-
-        <section className="overview-panel" aria-label="Mini repo health">
-          <div className="section-title-row">
-            <div>
-              <h2>Mini repo health</h2>
-              <p>{repoHealthRows.length} repositories with PR, issue, failed-run, and branch counts.</p>
+          {activity.length > 0 ? (
+            <ActivityFeed events={activity} onOpenPacket={onOpenPacket} />
+          ) : activeClaims.length > 0 ? (
+            <div className="active-run-list">
+              {activeClaims.slice(0, 3).map((item) => (
+                <button type="button" key={item.key} onClick={() => onOpenPacket(item.key)}>
+                  <span className="run-pulse" />
+                  <span>
+                    <small>{item.claimedBy || item.agent || "Agent"} · {item.key}</small>
+                    <strong>{item.title}</strong>
+                  </span>
+                  <em>{formatStatus(item.status)}</em>
+                </button>
+              ))}
             </div>
-            <button type="button" className="button secondary" onClick={() => onNavigate("repos")}>
-              All repos
-            </button>
-          </div>
-          <MiniRepoHealth rows={repoHealthRows} />
+          ) : (
+            <ActivityFeed events={activity} onOpenPacket={onOpenPacket} />
+          )}
         </section>
       </div>
+
+      <section className="overview-panel today-repos" aria-label="Mini repo health">
+        <div className="section-title-row">
+          <div>
+            <span className="section-kicker">System health</span>
+            <h2>Repository pulse</h2>
+            <p>{repoHealthRows.length} repositories · {failedRepoCount} with failed checks.</p>
+          </div>
+          <button type="button" className="button secondary" onClick={() => onNavigate("repos")}>
+            All repos
+          </button>
+        </div>
+        <MiniRepoHealth rows={repoHealthRows} />
+      </section>
     </>
   );
 }
@@ -3180,7 +3226,15 @@ function MiniRepoHealth({ rows }) {
   );
 }
 
-function ReviewQueue({ items, onUpdatePacket, onOpenPacket, onRefreshEvidence, githubState }) {
+function ReviewQueue({ items, selectedKey, onSelectPacket, onUpdatePacket, onOpenPacket, onRefreshEvidence, githubState }) {
+  const selectedReviewItem = items.find((item) => item.key === selectedKey) || items[0];
+
+  useEffect(() => {
+    if (items.length > 0 && selectedReviewItem && selectedReviewItem.key !== selectedKey) {
+      onSelectPacket?.(selectedReviewItem.key);
+    }
+  }, [items, selectedKey, selectedReviewItem, onSelectPacket]);
+
   if (items.length === 0) {
     return (
       <section className="overview-panel review-empty" aria-label="Review queue">
@@ -3189,25 +3243,78 @@ function ReviewQueue({ items, onUpdatePacket, onOpenPacket, onRefreshEvidence, g
     );
   }
 
+  const testsRecorded = items.filter((item) => linesFromValue(item.lastAgentUpdate?.testsRun).length > 0).length;
+  const prsLinked = items.filter((item) => item.lastAgentUpdate?.githubPrUrl || item.githubPrUrl).length;
+  const oldestUpdate = items.reduce((oldest, item) => {
+    if (!oldest || !item.updatedAt) return oldest || item.updatedAt;
+    return Date.parse(item.updatedAt) < Date.parse(oldest) ? item.updatedAt : oldest;
+  }, "");
+
   return (
     <section className="review-route" aria-label="Review queue">
-      <div className="section-title-row">
-        <div>
-          <h2>Review queue</h2>
-          <p>{items.length} packet{items.length === 1 ? "" : "s"} awaiting sign-off.</p>
-        </div>
+      <div className="review-metrics" aria-label="Review operating metrics">
+        <div><span>Awaiting decision</span><strong>{items.length}</strong><small>Needs reviewer action</small></div>
+        <div><span>Tests recorded</span><strong>{testsRecorded}</strong><small>Evidence attached</small></div>
+        <div><span>Pull requests</span><strong>{prsLinked}</strong><small>Linked for inspection</small></div>
+        <div><span>Oldest update</span><strong>{formatRelativeTime(oldestUpdate)}</strong><small>Queue age</small></div>
       </div>
-      <div className="review-grid">
-        {items.map((item) => (
-          <ReviewCard
-            key={item.key}
-            item={item}
-            onUpdatePacket={onUpdatePacket}
-            onOpenPacket={onOpenPacket}
-            onRefreshEvidence={onRefreshEvidence}
-            githubState={githubState}
-          />
-        ))}
+
+      <div className="review-workbench">
+        <aside className="review-inbox" aria-label="Review items">
+          <div className="review-inbox-head">
+            <div>
+              <span className="section-kicker">Sign-off inbox</span>
+              <h2>Needs review</h2>
+            </div>
+            <span>{items.length}</span>
+          </div>
+          <div className="review-inbox-tabs" role="group" aria-label="Review views">
+            <button type="button" aria-pressed="true">Open <strong>{items.length}</strong></button>
+            <button type="button" disabled>Returned <strong>0</strong></button>
+            <button type="button" disabled>Approved <strong>0</strong></button>
+          </div>
+          <div className="review-inbox-list">
+            {items.map((item) => (
+              <button
+                type="button"
+                key={item.key}
+                className={selectedReviewItem.key === item.key ? "is-selected" : ""}
+                aria-pressed={selectedReviewItem.key === item.key}
+                onClick={() => onSelectPacket?.(item.key)}
+              >
+                <span className="review-item-meta">
+                  <strong>{item.key}</strong>
+                  <em>{formatRelativeTime(item.updatedAt)}</em>
+                </span>
+                <b>{item.title}</b>
+                <span className="review-item-foot">
+                  <span>{item.repo}</span>
+                  <span>{item.claimedBy || item.agent || "Unassigned"}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <div className="review-detail">
+          <div className="review-detail-heading">
+            <div>
+              <span className="section-kicker">Decision workspace</span>
+              <h2>Validate the handoff</h2>
+              <p>Inspect delivery evidence, then approve, return, or block the packet.</p>
+            </div>
+            <StatusPill status={selectedReviewItem.status} />
+          </div>
+          <div className="review-grid">
+            <ReviewCard
+              item={selectedReviewItem}
+              onUpdatePacket={onUpdatePacket}
+              onOpenPacket={onOpenPacket}
+              onRefreshEvidence={onRefreshEvidence}
+              githubState={githubState}
+            />
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -3421,27 +3528,54 @@ function ReviewList({ label, items }) {
 }
 
 function AgentsOverview({ items, activeClaims, onOpenPacket, onRecoverRun }) {
+  const [agentFilter, setAgentFilter] = useState("all");
   const roster = ["Codex", "Claude Code"].map((agent) => ({
     agent,
     active: activeClaims.filter((item) => item.claimedBy === agent || (item.agent === agent && item.status !== "done")).length,
     assigned: items.filter((item) => item.agent === agent).length,
   }));
   const activity = buildActivityFeed(items, 6);
+  const visibleClaims = agentFilter === "all"
+    ? activeClaims
+    : activeClaims.filter((item) => item.claimedBy === agentFilter || item.agent === agentFilter);
+  const reviewCount = items.filter((item) => item.status === "needs_review").length;
+  const blockedCount = items.filter((item) => item.status === "blocked").length;
 
   return (
     <section className="agents-route" aria-label="Agent activity">
+      <div className="agent-metrics" aria-label="Agent operating metrics">
+        <div><span>Active runs</span><strong>{activeClaims.length}</strong><small>Currently executing</small></div>
+        <div><span>Assigned</span><strong>{items.filter((item) => item.agent).length}</strong><small>Across the backlog</small></div>
+        <div><span>Ready for review</span><strong>{reviewCount}</strong><small>Awaiting sign-off</small></div>
+        <div><span>Blocked</span><strong>{blockedCount}</strong><small>Needs intervention</small></div>
+      </div>
+
       <div className="overview-panel agents-main">
         <div className="section-title-row">
           <div>
-            <h2>Active claims</h2>
-            <p>{activeClaims.length} running or claimed packet{activeClaims.length === 1 ? "" : "s"}</p>
+            <span className="section-kicker">Execution</span>
+            <h2>Live runs</h2>
+            <p>{visibleClaims.length} running or claimed packet{visibleClaims.length === 1 ? "" : "s"}</p>
+          </div>
+          <div className="agent-filter" role="group" aria-label="Filter agent runs">
+            {["all", "Codex", "Claude Code"].map((agent) => (
+              <button
+                type="button"
+                key={agent}
+                className={agentFilter === agent ? "is-active" : ""}
+                aria-pressed={agentFilter === agent}
+                onClick={() => setAgentFilter(agent)}
+              >
+                {agent === "all" ? "All" : agent}
+              </button>
+            ))}
           </div>
         </div>
-        {activeClaims.length === 0 ? (
+        {visibleClaims.length === 0 ? (
           <div className="overview-empty">No active claims. Claimed packets and leases will appear here.</div>
         ) : (
           <div className="agent-claims">
-            {activeClaims.map((item) => (
+            {visibleClaims.map((item) => (
               <AgentClaimCard key={item.key} item={item} onOpenPacket={onOpenPacket} onRecoverRun={onRecoverRun} />
             ))}
           </div>
@@ -3458,14 +3592,20 @@ function AgentsOverview({ items, activeClaims, onOpenPacket, onRecoverRun }) {
           </div>
           <div className="roster-list">
             {roster.map((entry) => (
-              <article className="roster-row" key={entry.agent}>
+              <button
+                type="button"
+                className={`roster-row ${agentFilter === entry.agent ? "is-selected" : ""}`}
+                key={entry.agent}
+                aria-pressed={agentFilter === entry.agent}
+                onClick={() => setAgentFilter(entry.agent)}
+              >
                 <div className="roster-avatar">{agentInitials(entry.agent)}</div>
                 <div>
                   <strong>{entry.agent}</strong>
                   <span>{entry.assigned} assigned / {entry.active} running</span>
                 </div>
                 <b>{entry.active}</b>
-              </article>
+              </button>
             ))}
           </div>
         </section>
@@ -3477,7 +3617,23 @@ function AgentsOverview({ items, activeClaims, onOpenPacket, onRecoverRun }) {
               <p>{activity.length} latest lifecycle event{activity.length === 1 ? "" : "s"}.</p>
             </div>
           </div>
-          <ActivityFeed events={activity} onOpenPacket={onOpenPacket} />
+          {activity.length > 0 ? (
+            <ActivityFeed events={activity} onOpenPacket={onOpenPacket} />
+          ) : activeClaims.length > 0 ? (
+            <div className="active-run-list is-sidebar">
+              {activeClaims.slice(0, 3).map((item) => (
+                <button type="button" key={item.key} onClick={() => onOpenPacket(item.key)}>
+                  <span className="run-pulse" />
+                  <span>
+                    <small>{item.claimedBy || item.agent || "Agent"} · {item.key}</small>
+                    <strong>{item.title}</strong>
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <ActivityFeed events={activity} onOpenPacket={onOpenPacket} />
+          )}
         </section>
       </aside>
     </section>
@@ -3614,15 +3770,6 @@ function ClaimList({ items, onOpenPacket }) {
           </div>
         </article>
       ))}
-    </div>
-  );
-}
-
-function PulseRow({ label, value }) {
-  return (
-    <div className="pulse-row">
-      <span>{label}</span>
-      <strong>{value}</strong>
     </div>
   );
 }

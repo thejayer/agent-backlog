@@ -333,6 +333,11 @@ test("Today dashboard claims the next packet and shows activity", async ({ page,
   await expect(page.getByLabel("Today attention inbox")).toBeVisible();
   await expect(page.getByLabel("Today overview")).toContainText("TASK-102");
   await expect(page.getByRole("button", { name: "Claim for agent" })).toBeVisible();
+  await expect(page.locator(".today-command")).toBeVisible();
+  await expect(page.getByLabel("Operating signals")).toContainText("Review queue");
+  await expect(page.getByLabel("Operating signals")).toContainText("Agent runs");
+  await expect(page.getByLabel("Operating signals")).toContainText("Ready work");
+  await expect(page.getByLabel("Operating signals")).toContainText("Repo alerts");
   await expect(page.getByLabel("Recent agent activity")).toContainText("No agent events yet");
   await expect(page.getByLabel("Mini repo health")).toContainText("web-app");
   await expect(page.getByLabel("Mini repo health")).toContainText("failed");

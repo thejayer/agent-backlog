@@ -2987,7 +2987,7 @@ function TodayAttentionInbox({
 
             return (
               <article className={`attention-item attention-${item.severity}`} key={item.id}>
-                <span className="attention-severity" aria-label={`${item.severity} priority`} />
+                <span className="attention-severity" role="img" aria-label={`${item.severity} priority`} />
                 <div className="attention-item-body">
                   <div className="attention-item-topline">
                     <span className={`attention-category category-${item.primaryCategory}`}>{item.primaryCategory}</span>

@@ -742,7 +742,7 @@ textarea:focus-visible {
   text-transform: uppercase;
 }
 
-.category-handoff { color: var(--manage-rust); }
+.category-handoff { color: color-mix(in srgb, var(--manage-rust) 70%, var(--manage-ink) 30%); }
 .category-github { color: var(--manage-green); }
 .category-review { color: var(--manage-amber); }
 

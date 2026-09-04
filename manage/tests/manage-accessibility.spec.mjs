@@ -13,10 +13,13 @@ function violationSummary(violations) {
   }));
 }
 
-async function expectNoBlockingViolations(page, testInfo, state) {
-  const results = await new AxeBuilder({ page })
-    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
-    .analyze();
+async function expectNoBlockingViolations(page, testInfo, state, includeSelectors = []) {
+  let builder = new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]);
+  for (const selector of includeSelectors) {
+    builder = builder.include(selector);
+  }
+  const results = await builder.analyze();
   const diagnostics = violationSummary(results.violations);
   await testInfo.attach(`axe-${state}.json`, {
     body: JSON.stringify(diagnostics, null, 2),
@@ -169,5 +172,21 @@ test("@a11y overflow workspace menu stays keyboard reachable", async ({ page }, 
   await expectNoBlockingViolations(page, testInfo, "workspace-settings-menu");
   await page.keyboard.press("Escape");
   await expect(menu).toBeHidden();
+});
+
+test("@a11y Today, Review, and Agents route layouts stay above the contrast gate", async ({ page, request }, testInfo) => {
+  await request.patch("/api/work-items/TASK-104", { data: { status: "needs_review" } });
+
+  await page.goto("/?view=today");
+  await expect(page.locator(".today-command")).toBeVisible();
+  await expectNoBlockingViolations(page, testInfo, "today-command-center");
+
+  await page.goto("/?view=review&packet=TASK-104");
+  await expect(page.locator(".review-workbench")).toBeVisible();
+  await expectNoBlockingViolations(page, testInfo, "review-workbench");
+
+  await page.goto("/?view=agents");
+  await expect(page.getByLabel("Agent operating metrics")).toBeVisible();
+  await expectNoBlockingViolations(page, testInfo, "agents-console", [".agent-metrics", ".agent-filter"]);
 });
 

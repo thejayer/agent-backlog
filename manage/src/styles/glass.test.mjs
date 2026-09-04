@@ -7,7 +7,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const branded = /Commerce Street|commercestreet|RegVault|RegVault-inspired|CSC-|COM-|Harbor|csc-workspace|csc-crm/i;
 const stageTokens = /--stage-(prospecting|holding|active|dd|term|closed)/;
 const leftoverThemeGlass = /\[data-(?:manage-)?theme=["']glass["']\]/;
-const cscOnlySelectors = /\.mb-(?:content|row|list|workspace|stat)|command-palette|shell-menu|review-workbench|agent-metrics/;
+const cscOnlySelectors = /\.mb-(?:content|row|list|workspace|stat)|review-workbench|agent-metrics/;
 
 describe("glass appearance sources stay unbranded", () => {
   const files = [
@@ -16,6 +16,8 @@ describe("glass appearance sources stay unbranded", () => {
     join("..", "styles.css"),
     join("..", "components", "ManageShell.jsx"),
     join("..", "lib", "shellPreferences.mjs"),
+    join("..", "lib", "shellChrome.mjs"),
+    "shell.css",
   ];
 
   it.each(files)("does not leak branded copy or deal-pipeline stage tokens in %s", (relativePath) => {

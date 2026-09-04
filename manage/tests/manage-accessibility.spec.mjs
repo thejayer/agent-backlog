@@ -26,16 +26,22 @@ async function expectNoBlockingViolations(page, testInfo, state) {
   expect(blocking, `${state} has serious or critical accessibility violations`).toEqual([]);
 }
 
-async function openOperatorControls(page) {
-  const settingsTrigger = page.getByRole("button", { name: "Settings" });
-  if (await settingsTrigger.isVisible()) {
-    await settingsTrigger.click();
-    return {
-      controls: page.getByRole("dialog", { name: "Operator settings" }),
-      returnFocus: settingsTrigger,
-    };
+async function openWorkspaceMenu(page) {
+  const trigger = page.getByRole("button", { name: "Workspace settings" });
+  const menu = page.getByRole("region", { name: "Workspace settings" });
+  if (!(await menu.isVisible())) {
+    await trigger.click();
   }
-  return { controls: page, returnFocus: null };
+  return { menu, trigger };
+}
+
+async function openOperatorControls(page) {
+  const quickControls = page.locator(".shell-quick-controls");
+  if (await quickControls.isVisible()) {
+    return { controls: page, returnFocus: null };
+  }
+  const { menu, trigger } = await openWorkspaceMenu(page);
+  return { controls: menu, returnFocus: trigger };
 }
 
 test.beforeEach(async ({ page }) => {
@@ -81,9 +87,9 @@ async function applyAppearance(page, { appearance, theme }) {
   await controls.getByLabel("Theme").selectOption(theme);
   await expect(page.locator("html")).toHaveAttribute("data-manage-appearance", appearance);
   await expect(page.locator("html")).toHaveAttribute("data-manage-theme", theme);
-  if (await page.getByRole("dialog", { name: "Operator settings" }).isVisible()) {
+  if (await page.getByRole("region", { name: "Workspace settings" }).isVisible()) {
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("dialog", { name: "Operator settings" })).toBeHidden();
+    await expect(page.getByRole("region", { name: "Workspace settings" })).toBeHidden();
   }
 }
 
@@ -123,8 +129,8 @@ test("@a11y initiative and destructive dialogs preserve keyboard-safe modal beha
   await expect(initiativeDialog).toBeHidden();
   await expect(initiativeTrigger).toBeFocused();
 
-  const { controls, returnFocus } = await openOperatorControls(page);
-  const resetTrigger = controls.getByRole("button", { name: "Reset store" });
+  const { menu } = await openWorkspaceMenu(page);
+  const resetTrigger = menu.getByRole("button", { name: "Reset store" });
   await resetTrigger.focus();
   await page.keyboard.press("Enter");
   const destructiveDialog = page.getByRole("dialog", { name: "Reset backlog store" });
@@ -132,21 +138,36 @@ test("@a11y initiative and destructive dialogs preserve keyboard-safe modal beha
   await expectNoBlockingViolations(page, testInfo, "destructive-dialog");
   await page.keyboard.press("Escape");
   await expect(destructiveDialog).toBeHidden();
-  await expect(returnFocus || resetTrigger).toBeFocused();
+  await expect(resetTrigger).toBeFocused();
 });
 
-test("@a11y mobile operator settings preserve accessible modal behavior", async ({ page }, testInfo) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+test("@a11y command palette preserves accessible modal behavior", async ({ page }, testInfo) => {
   await page.goto("/");
 
-  const trigger = page.getByRole("button", { name: "Settings" });
+  const trigger = page.getByRole("button", { name: "Find a packet or view" });
   await trigger.focus();
   await page.keyboard.press("Enter");
 
-  const dialog = page.getByRole("dialog", { name: "Operator settings" });
-  await expect(dialog.getByLabel("Density")).toBeFocused();
-  await expectNoBlockingViolations(page, testInfo, "mobile-operator-settings");
+  const dialog = page.getByRole("dialog", { name: "Command palette" });
+  await expect(dialog.getByLabel("Search commands")).toBeFocused();
+  await expectNoBlockingViolations(page, testInfo, "command-palette");
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(trigger).toBeFocused();
 });
+
+test("@a11y overflow workspace menu stays keyboard reachable", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+
+  const trigger = page.getByRole("button", { name: "Workspace settings" });
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+
+  const menu = page.getByRole("region", { name: "Workspace settings" });
+  await expect(menu.getByLabel("Density")).toBeVisible();
+  await expectNoBlockingViolations(page, testInfo, "workspace-settings-menu");
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+});
+

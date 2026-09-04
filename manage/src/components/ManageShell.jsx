@@ -1,27 +1,24 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   appearanceLabels,
   appearanceOptions,
   themeLabels,
   themeOptions,
 } from "../lib/shellPreferences.mjs";
+import {
+  buildCommandResults,
+  commandShortcutLabel,
+  groupedNavItems,
+  navGroups,
+  navItems,
+} from "../lib/shellChrome.mjs";
 import { ModalDialog } from "./ModalDialog.jsx";
 
-export { appearanceLabels, appearanceOptions, themeLabels, themeOptions };
+export { appearanceLabels, appearanceOptions, navGroups, navItems, themeLabels, themeOptions };
 export const densityOptions = [
   { id: "compact", label: "Compact" },
   { id: "regular", label: "Regular" },
   { id: "comfortable", label: "Comfortable" },
-];
-
-export const navItems = [
-  { id: "today", label: "Today", icon: "dashboard" },
-  { id: "backlog", label: "Backlog", icon: "queue" },
-  { id: "initiatives", label: "Initiatives", icon: "initiative" },
-  { id: "shipped", label: "Shipped", icon: "calendar" },
-  { id: "repos", label: "Repos", icon: "repo" },
-  { id: "agents", label: "Agents", icon: "agent" },
-  { id: "review", label: "Review", icon: "review" },
 ];
 
 export const viewCopy = {
@@ -62,20 +59,13 @@ export const viewCopy = {
   },
 };
 
-function OperatorControls({
+function PreferenceControls({
   densityMode,
   themeMode,
   appearanceMode,
-  sessionMode,
-  sessionUser,
-  syncState,
-  syncMessage,
-  loadState,
   onDensityModeChange,
   onThemeModeChange,
   onAppearanceModeChange,
-  onReset,
-  onLogout,
   initialFocus = false,
 }) {
   return (
@@ -119,6 +109,21 @@ function OperatorControls({
           ))}
         </select>
       </label>
+    </>
+  );
+}
+
+function SessionActions({
+  sessionMode,
+  sessionUser,
+  syncState,
+  syncMessage,
+  loadState,
+  onReset,
+  onLogout,
+}) {
+  return (
+    <>
       <div className="session-chip" title={sessionUser?.login || sessionMode}>
         {sessionMode === "github" ? `GitHub: ${sessionUser?.login || "signed in"}` : "Token session"}
       </div>
@@ -139,6 +144,7 @@ export function ManageShell({
   activeNav,
   navCounts,
   nextItem,
+  packets = [],
   densityMode,
   themeMode,
   appearanceMode,
@@ -150,6 +156,8 @@ export function ManageShell({
   onNavigate,
   onOpenPacket,
   onCreate,
+  onCreatePacket,
+  onCreateInitiative,
   onDensityModeChange,
   onThemeModeChange,
   onAppearanceModeChange,
@@ -159,29 +167,99 @@ export function ManageShell({
   children,
   overlays,
 }) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [commandQuery, setCommandQuery] = useState("");
+  const [shellMenuOpen, setShellMenuOpen] = useState(false);
+  const shellMenuRef = useRef(null);
   const currentView = viewCopy[activeNav] || viewCopy.backlog;
+  const groups = useMemo(() => groupedNavItems(navItems, navGroups), []);
+  const shortcut = useMemo(
+    () => commandShortcutLabel(typeof navigator === "undefined" ? "" : navigator.userAgent),
+    [],
+  );
+  const commandResults = useMemo(
+    () => buildCommandResults({ query: commandQuery, views: navItems, viewCopy, packets }),
+    [commandQuery, packets],
+  );
+
+  function closeChromeOverlays() {
+    setCommandOpen(false);
+    setCommandQuery("");
+    setShellMenuOpen(false);
+  }
 
   useEffect(() => {
-    setSettingsOpen(false);
+    closeChromeOverlays();
   }, [activeNav]);
 
   useEffect(() => {
-    const desktopQuery = window.matchMedia("(min-width: 981px)");
-    const closeOnDesktop = (event) => {
-      if (event.matches) setSettingsOpen(false);
-    };
-    desktopQuery.addEventListener("change", closeOnDesktop);
-    return () => desktopQuery.removeEventListener("change", closeOnDesktop);
+    function onKeyDown(event) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setShellMenuOpen(false);
+        setCommandQuery("");
+        setCommandOpen((current) => !current);
+        return;
+      }
+
+      if (event.key === "Escape") {
+        if (event.defaultPrevented) return;
+        setShellMenuOpen(false);
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  function resetFromSettings() {
-    setSettingsOpen(false);
+  useEffect(() => {
+    if (!shellMenuOpen) return undefined;
+
+    function onPointerDown(event) {
+      if (!shellMenuRef.current?.contains(event.target)) {
+        setShellMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [shellMenuOpen]);
+
+  function navigate(navId) {
+    closeChromeOverlays();
+    onNavigate(navId);
+  }
+
+  function openPacket(key) {
+    closeChromeOverlays();
+    onOpenPacket(key);
+  }
+
+  function runCommand(result) {
+    if (result.type === "packet") {
+      openPacket(result.id);
+      return;
+    }
+
+    if (result.type === "action") {
+      closeChromeOverlays();
+      if (result.id === "new-initiative") {
+        (onCreateInitiative || onCreate)?.();
+        return;
+      }
+      (onCreatePacket || onCreate)?.();
+      return;
+    }
+
+    navigate(result.id);
+  }
+
+  function resetFromMenu() {
     onReset();
   }
 
-  function logoutFromSettings() {
-    setSettingsOpen(false);
+  function logoutFromMenu() {
+    setShellMenuOpen(false);
     onLogout();
   }
 
@@ -197,22 +275,30 @@ export function ManageShell({
         </div>
 
         <nav className="side-nav" aria-label="Main navigation">
-          {navItems.map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className={`nav-button ${activeNav === item.id ? "is-active" : ""}`}
-              aria-label={item.label}
-              aria-current={activeNav === item.id ? "page" : undefined}
-              onClick={() => {
-                setSettingsOpen(false);
-                onNavigate(item.id);
-              }}
+          {groups.map((group) => (
+            <div
+              className="nav-group"
+              role="group"
+              aria-label={group.label}
+              data-nav-count={group.items.length}
+              key={group.label}
             >
-              <IconComponent name={item.icon} />
-              <span className="nav-label">{item.label}</span>
-              {navCounts[item.id] ? <span className="nav-count">{navCounts[item.id]}</span> : null}
-            </button>
+              <span className="nav-group-label">{group.label}</span>
+              {group.items.map((item) => (
+                <button
+                  type="button"
+                  key={item.id}
+                  className={`nav-button ${activeNav === item.id ? "is-active" : ""}`}
+                  aria-label={item.label}
+                  aria-current={activeNav === item.id ? "page" : undefined}
+                  onClick={() => navigate(item.id)}
+                >
+                  <IconComponent name={item.icon} />
+                  <span className="nav-label">{item.label}</span>
+                  {navCounts[item.id] ? <span className="nav-count">{navCounts[item.id]}</span> : null}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
 
@@ -221,7 +307,7 @@ export function ManageShell({
           <button
             type="button"
             className="next-packet"
-            onClick={() => onOpenPacket(nextItem?.key)}
+            onClick={() => openPacket(nextItem?.key)}
             disabled={!nextItem}
             aria-label={nextItem ? `Next ready packet ${nextItem.key}` : "No ready packet"}
           >
@@ -236,42 +322,88 @@ export function ManageShell({
 
       <main className={`workspace workspace-${activeNav}`}>
         <header className="topbar">
-          <div>
+          <div className="view-heading">
             <span className="eyebrow">{currentView.eyebrow}</span>
             <h1>{currentView.title}</h1>
             <p>{currentView.description}</p>
           </div>
+          <button
+            type="button"
+            className="command-trigger"
+            aria-label="Find a packet or view"
+            aria-haspopup="dialog"
+            aria-expanded={commandOpen}
+            onClick={() => {
+              setShellMenuOpen(false);
+              setCommandOpen(true);
+            }}
+          >
+            <IconComponent name="search" />
+            <span>Find a packet or view</span>
+            <kbd>{shortcut}</kbd>
+          </button>
           <div className="topbar-actions">
             <button type="button" className="button primary" onClick={onCreate}>
               <IconComponent name="plus" />
               {activeNav === "initiatives" ? "New initiative" : "New packet"}
             </button>
-            <button
-              type="button"
-              className="button secondary mobile-settings-trigger"
-              aria-haspopup="dialog"
-              aria-expanded={settingsOpen}
-              onClick={() => setSettingsOpen(true)}
-            >
-              <IconComponent name="more" />
-              Settings
-            </button>
-            <div className="topbar-secondary-actions">
-              <OperatorControls
+            <div className="shell-quick-controls">
+              <PreferenceControls
                 densityMode={densityMode}
                 themeMode={themeMode}
                 appearanceMode={appearanceMode}
-                sessionMode={sessionMode}
-                sessionUser={sessionUser}
-                syncState={syncState}
-                syncMessage={syncMessage}
-                loadState={loadState}
                 onDensityModeChange={onDensityModeChange}
                 onThemeModeChange={onThemeModeChange}
                 onAppearanceModeChange={onAppearanceModeChange}
-                onReset={onReset}
-                onLogout={onLogout}
               />
+            </div>
+            <div className="shell-menu-wrap" ref={shellMenuRef}>
+              <button
+                type="button"
+                className="icon-button shell-menu-button"
+                aria-label="Workspace settings"
+                aria-haspopup="true"
+                aria-expanded={shellMenuOpen}
+                aria-controls="workspace-settings-panel"
+                onClick={() => {
+                  setCommandOpen(false);
+                  setShellMenuOpen((current) => !current);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setShellMenuOpen(false);
+                }}
+              >
+                <IconComponent name="more" />
+              </button>
+              {shellMenuOpen ? (
+                <div
+                  id="workspace-settings-panel"
+                  className="topbar-secondary-actions shell-menu"
+                  role="region"
+                  aria-label="Workspace settings"
+                >
+                  <div className="shell-menu-preferences">
+                    <PreferenceControls
+                      densityMode={densityMode}
+                      themeMode={themeMode}
+                      appearanceMode={appearanceMode}
+                      onDensityModeChange={onDensityModeChange}
+                      onThemeModeChange={onThemeModeChange}
+                      onAppearanceModeChange={onAppearanceModeChange}
+                      initialFocus
+                    />
+                  </div>
+                  <SessionActions
+                    sessionMode={sessionMode}
+                    sessionUser={sessionUser}
+                    syncState={syncState}
+                    syncMessage={syncMessage}
+                    loadState={loadState}
+                    onReset={resetFromMenu}
+                    onLogout={logoutFromMenu}
+                  />
+                </div>
+              ) : null}
             </div>
           </div>
         </header>
@@ -279,45 +411,59 @@ export function ManageShell({
         {children}
       </main>
 
-      {settingsOpen ? (
+      {commandOpen ? (
         <ModalDialog
-          className="operator-settings-sheet"
-          backdropClassName="operator-settings-backdrop"
-          labelledBy="operator-settings-title"
-          initialFocusSelector="[data-settings-initial-focus]"
-          onClose={() => setSettingsOpen(false)}
+          className="command-palette"
+          backdropClassName="command-backdrop"
+          labelledBy="command-palette-title"
+          initialFocusSelector="[data-command-input]"
+          onClose={() => {
+            setCommandOpen(false);
+            setCommandQuery("");
+          }}
         >
-          <div className="operator-settings-head">
-            <div>
-              <span className="eyebrow">Preferences</span>
-              <h2 id="operator-settings-title">Operator settings</h2>
-            </div>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Close operator settings"
-              onClick={() => setSettingsOpen(false)}
-            >
-              <IconComponent name="close" />
-            </button>
-          </div>
-          <div className="operator-settings-controls">
-            <OperatorControls
-              densityMode={densityMode}
-              themeMode={themeMode}
-              appearanceMode={appearanceMode}
-              sessionMode={sessionMode}
-              sessionUser={sessionUser}
-              syncState={syncState}
-              syncMessage={syncMessage}
-              loadState={loadState}
-              onDensityModeChange={onDensityModeChange}
-              onThemeModeChange={onThemeModeChange}
-              onAppearanceModeChange={onAppearanceModeChange}
-              onReset={resetFromSettings}
-              onLogout={logoutFromSettings}
-              initialFocus
+          <h2 id="command-palette-title" className="sr-only">
+            Command palette
+          </h2>
+          <label className="command-input">
+            <IconComponent name="search" />
+            <input
+              data-command-input="true"
+              value={commandQuery}
+              onChange={(event) => setCommandQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && commandResults[0]) {
+                  event.preventDefault();
+                  runCommand(commandResults[0]);
+                }
+              }}
+              placeholder="Search views, packet keys, titles, or repos…"
+              aria-label="Search commands"
             />
+            <kbd>Esc</kbd>
+          </label>
+          <div className="command-results">
+            {commandResults.length > 0 ? (
+              commandResults.map((result) => (
+                <button
+                  type="button"
+                  key={`${result.type}-${result.id}`}
+                  aria-label={result.type === "packet" ? `${result.id} packet` : `${result.title} ${result.type}`}
+                  onClick={() => runCommand(result)}
+                >
+                  <span className={`command-result-icon command-result-${result.type}`}>
+                    <IconComponent name={result.icon} />
+                  </span>
+                  <span>
+                    <strong>{result.title}</strong>
+                    <small>{result.meta}</small>
+                  </span>
+                  <em>{result.type === "packet" ? "Packet" : result.type === "action" ? "Action" : "View"}</em>
+                </button>
+              ))
+            ) : (
+              <div className="overview-empty">No matching packets or views.</div>
+            )}
           </div>
         </ModalDialog>
       ) : null}

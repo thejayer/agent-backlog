@@ -1905,9 +1905,12 @@ function ManageApp({
       syncState={syncState}
       syncMessage={syncMessage}
       loadState={loadState}
+      packets={items}
       onNavigate={selectNav}
       onOpenPacket={openPacket}
       onCreate={() => (activeNav === "initiatives" ? setShowInitiativeComposer(true) : setShowComposer(true))}
+      onCreatePacket={() => setShowComposer(true)}
+      onCreateInitiative={() => setShowInitiativeComposer(true)}
       onDensityModeChange={setDensityMode}
       onThemeModeChange={onThemeModeChange}
       onAppearanceModeChange={onAppearanceModeChange}

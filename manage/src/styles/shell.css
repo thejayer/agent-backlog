@@ -44,6 +44,25 @@
   gap: 4px;
 }
 
+.nav-group {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 14px;
+}
+
+.nav-group:last-child {
+  margin-bottom: 0;
+}
+
+.nav-group-label {
+  padding: 0 11px 4px;
+  color: var(--manage-faint);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .nav-button {
   display: flex;
   align-items: center;
@@ -139,11 +158,15 @@
 }
 
 .topbar {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(180px, 0.85fr) minmax(220px, 1.15fr) auto;
+  align-items: center;
   gap: var(--manage-gap);
   margin-bottom: var(--manage-gap);
+}
+
+.view-heading p {
+  display: none;
 }
 
 .topbar h1 {
@@ -165,12 +188,167 @@
 }
 
 .topbar-actions,
-.topbar-secondary-actions {
+.topbar-secondary-actions,
+.shell-quick-controls {
   display: flex;
   align-items: center;
   gap: var(--manage-gap-tight);
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.command-trigger {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--manage-border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--manage-surface-soft) 62%, var(--manage-surface));
+  color: var(--manage-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.command-trigger:hover {
+  border-color: color-mix(in srgb, var(--manage-brand) 36%, var(--manage-border));
+  color: var(--manage-ink);
+}
+
+.command-trigger kbd,
+.command-input kbd {
+  padding: 3px 6px;
+  border: 1px solid var(--manage-border);
+  border-radius: 5px;
+  background: var(--manage-surface);
+  color: var(--manage-muted);
+  font: 600 10px/1.2 var(--manage-font-ui);
+}
+
+.shell-menu-wrap {
+  position: relative;
+}
+
+.shell-menu-button {
+  width: 38px;
+  height: 38px;
+}
+
+.shell-menu {
+  position: absolute;
+  z-index: 12;
+  top: calc(100% + 8px);
+  right: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: 330px;
+  padding: 12px;
+  border: 1px solid var(--manage-border);
+  border-radius: 11px;
+  background: var(--manage-surface);
+  box-shadow: var(--shadow-xl);
+}
+
+.shell-menu-preferences {
+  display: none;
+}
+
+.shell-menu .session-chip,
+.shell-menu .sync-chip,
+.shell-menu .button {
+  width: 100%;
+  max-width: none;
+}
+
+.command-backdrop {
+  z-index: 30;
+  place-items: start center;
+  padding: 12vh 20px 20px;
+}
+
+.command-palette {
+  width: min(620px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--manage-border);
+  border-radius: 14px;
+  background: var(--manage-surface);
+  box-shadow: var(--shadow-xl);
+}
+
+.command-input {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 62px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--manage-border);
+}
+
+.command-input input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--manage-ink);
+  font-size: 15px;
+}
+
+.command-results {
+  display: grid;
+  gap: 3px;
+  max-height: 460px;
+  padding: 8px;
+  overflow: auto;
+}
+
+.command-results button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--manage-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.command-results button:hover,
+.command-results button:focus-visible {
+  outline: 0;
+  background: var(--manage-hover);
+}
+
+.command-results button > span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+}
+
+.command-results small,
+.command-results em {
+  color: var(--manage-muted);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.command-result-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--manage-surface-soft);
+  color: var(--manage-brand);
 }
 
 .shell-control {
@@ -239,45 +417,6 @@
   display: none;
 }
 
-.operator-settings-sheet {
-  width: min(460px, calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
-  overflow: auto;
-  padding: 22px;
-  border: 1px solid var(--manage-border);
-  border-radius: 14px;
-  background: var(--manage-surface);
-  box-shadow: var(--shadow-xl);
-}
-
-.operator-settings-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--manage-gap);
-  margin-bottom: var(--manage-gap);
-}
-
-.operator-settings-head h2 {
-  margin: 3px 0 0;
-  color: var(--manage-ink);
-  font-family: var(--manage-font-display);
-  font-size: 24px;
-}
-
-.operator-settings-controls {
-  display: grid;
-  gap: var(--manage-gap-tight);
-}
-
-.operator-settings-controls .shell-control,
-.operator-settings-controls .session-chip,
-.operator-settings-controls .sync-chip,
-.operator-settings-controls .button {
-  width: 100%;
-  max-width: none;
-}
-
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -291,7 +430,28 @@
   }
 
   .side-nav {
+    display: grid;
     grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  .nav-group {
+    display: grid;
+    grid-template-columns: subgrid;
+    gap: 4px;
+    margin: 0;
+  }
+
+  .nav-group[data-nav-count="1"] {
+    grid-column: span 1;
+  }
+
+  .nav-group[data-nav-count="2"] {
+    grid-column: span 2;
+  }
+
+  .nav-group-label {
+    display: none;
   }
 
   .nav-button {
@@ -326,22 +486,54 @@
     display: none;
   }
 
-  .topbar-secondary-actions {
+  .topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .view-heading {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .command-trigger {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .topbar-actions {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .shell-quick-controls {
     display: none;
   }
 
-  .button.mobile-settings-trigger {
-    display: inline-flex;
+  .shell-menu-preferences {
+    display: grid;
+    grid-column: 1 / -1;
+    gap: 8px;
   }
 
-  .operator-settings-backdrop {
-    place-items: end center;
-    padding: 12px;
+  .shell-menu-preferences .shell-control,
+  .shell-menu-preferences .shell-control select {
+    width: 100%;
+  }
+}
+
+@media (max-width: 620px) {
+  .command-trigger span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .operator-settings-sheet {
-    width: min(460px, 100%);
-    max-height: calc(100vh - 24px);
-    border-radius: 16px;
+  .command-trigger kbd {
+    display: none;
+  }
+
+  .shell-menu {
+    right: -2px;
+    width: min(330px, calc(100vw - 24px));
   }
 }

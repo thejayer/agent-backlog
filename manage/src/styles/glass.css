@@ -132,6 +132,8 @@
 [data-manage-appearance="glass"] .saved-view-controls,
 [data-manage-appearance="glass"] .saved-view-dialog,
 [data-manage-appearance="glass"] .operator-settings-sheet,
+[data-manage-appearance="glass"] .command-palette,
+[data-manage-appearance="glass"] .shell-menu,
 [data-manage-appearance="glass"] .composer {
   border-color: var(--manage-glass-edge);
   background: var(--manage-surface-glass);
@@ -166,7 +168,8 @@
   .packet-property,
   .shell-control,
   .sync-chip,
-  .session-chip
+  .session-chip,
+  .command-trigger
 ) {
   border-color: color-mix(in srgb, var(--manage-glass-edge) 62%, transparent);
   background: color-mix(in srgb, var(--manage-surface-soft) 78%, transparent);

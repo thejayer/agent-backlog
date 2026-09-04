@@ -20,16 +20,22 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function openOperatorControls(page) {
-  const settingsTrigger = page.getByRole("button", { name: "Settings" });
-  if (await settingsTrigger.isVisible()) {
-    await settingsTrigger.click();
-    return {
-      controls: page.getByRole("dialog", { name: "Operator settings" }),
-      returnFocus: settingsTrigger,
-    };
+async function openWorkspaceMenu(page) {
+  const trigger = page.getByRole("button", { name: "Workspace settings" });
+  const menu = page.getByRole("region", { name: "Workspace settings" });
+  if (!(await menu.isVisible())) {
+    await trigger.click();
   }
-  return { controls: page, returnFocus: null };
+  return { menu, trigger };
+}
+
+async function openOperatorControls(page) {
+  const quickControls = page.locator(".shell-quick-controls");
+  if (await quickControls.isVisible()) {
+    return { controls: page, returnFocus: null };
+  }
+  const { menu, trigger } = await openWorkspaceMenu(page);
+  return { controls: menu, returnFocus: trigger };
 }
 
 const manageAuthToken = process.env.MANAGE_PLAYWRIGHT_AUTH_TOKEN || "manage-playwright-local-agent-token";
@@ -263,47 +269,42 @@ test("persists appearance, theme, and density controls for the session", async (
   await expect(reloaded.getByLabel("Appearance")).not.toContainText(/Harbor|Glassy/i);
 });
 
-test("keeps mobile navigation identifiable and moves operator controls into settings", async ({ page }) => {
+test("keeps mobile navigation identifiable and moves session actions into the overflow menu", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
 
   const navigation = page.getByRole("navigation", { name: "Main navigation" });
   const activeDestination = navigation.getByRole("button", { name: "Backlog" });
   await expect(activeDestination.locator(".nav-label")).toBeVisible();
-  await expect(page.locator(".topbar-secondary-actions")).toBeHidden();
+  await expect(page.locator(".shell-quick-controls")).toBeHidden();
 
-  const settingsTrigger = page.getByRole("button", { name: "Settings" });
-  await settingsTrigger.click();
-  const settings = page.getByRole("dialog", { name: "Operator settings" });
-  await expect(settings.getByLabel("Density")).toBeFocused();
-  await settings.getByLabel("Theme").selectOption("dark");
-  await settings.getByLabel("Appearance").selectOption("glass");
-  await settings.getByLabel("Density").selectOption("compact");
+  const { menu, trigger } = await openWorkspaceMenu(page);
+  await expect(menu.getByLabel("Density")).toBeVisible();
+  await menu.getByLabel("Theme").selectOption("dark");
+  await menu.getByLabel("Appearance").selectOption("glass");
+  await menu.getByLabel("Density").selectOption("compact");
   await expect(page.locator("html")).toHaveAttribute("data-manage-theme", "dark");
   await expect(page.locator("html")).toHaveAttribute("data-manage-appearance", "glass");
   await expect(page.locator("html")).toHaveAttribute("data-manage-density", "compact");
-  await expect(settings.getByLabel("Appearance")).not.toContainText(/Harbor|Glassy/i);
+  await expect(menu.getByLabel("Appearance")).not.toContainText(/Harbor|Glassy/i);
+  await expect(menu.getByText("Token session")).toBeVisible();
+  await expect(menu.getByRole("button", { name: "Reset store" })).toBeVisible();
+  await expect(menu.getByRole("button", { name: "Sign out" })).toBeVisible();
 
   await page.keyboard.press("Escape");
-  await expect(settings).toBeHidden();
-  await expect(settingsTrigger).toBeFocused();
+  await expect(menu).toBeHidden();
 
   await navigation.getByRole("button", { name: "Today" }).click();
   await expect(page).toHaveURL(/view=today/);
   await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
   await expect(navigation.getByRole("button", { name: "Today" }).locator(".nav-label")).toBeVisible();
-
-  await settingsTrigger.click();
-  await page.setViewportSize({ width: 1100, height: 844 });
-  await expect(settings).toBeHidden();
-  await expect(page.locator(".topbar-secondary-actions")).toBeVisible();
-  await expect(settingsTrigger).toBeHidden();
+  await expect(trigger).toBeVisible();
 });
 
 test("requires typed confirmation before resetting the store", async ({ page, request }) => {
   await page.goto("/");
-  let { controls, returnFocus } = await openOperatorControls(page);
-  let resetTrigger = controls.getByRole("button", { name: "Reset store" });
+  let { menu } = await openWorkspaceMenu(page);
+  let resetTrigger = menu.getByRole("button", { name: "Reset store" });
   await resetTrigger.click();
 
   const dialog = page.getByRole("dialog", { name: "Reset backlog store" });
@@ -312,10 +313,10 @@ test("requires typed confirmation before resetting the store", async ({ page, re
   await expect(dialog.getByRole("button", { name: "Reset store" })).toBeDisabled();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
-  await expect(returnFocus || resetTrigger).toBeFocused();
+  await expect(resetTrigger).toBeFocused();
 
-  ({ controls, returnFocus } = await openOperatorControls(page));
-  resetTrigger = controls.getByRole("button", { name: "Reset store" });
+  ({ menu } = await openWorkspaceMenu(page));
+  resetTrigger = menu.getByRole("button", { name: "Reset store" });
   await resetTrigger.click();
   await page.getByRole("dialog", { name: "Reset backlog store" }).getByLabel("Typed confirmation").fill("RESET MANAGE");
   await page.getByRole("dialog", { name: "Reset backlog store" }).getByRole("button", { name: "Reset store" }).click();

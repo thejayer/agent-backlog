@@ -1,0 +1,191 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# Public Agent Backlog CodeRabbit template.
+# Forks and other stacks: keep this file, then adjust path_instructions,
+# path_filters, tools, and pre_merge_checks for your layout.
+# Org overlays can inherit this file (inheritance: true) and override keys.
+#
+# Reviews stay opt-in (keyword or labels) so public usage stays cheap.
+# Request a review with "coderabbit:review" in the PR body, or apply the
+# coderabbit-review label. Skip with coderabbit-skip or a WIP-style title.
+
+inheritance: true
+language: "en-US"
+tone_instructions: "Be concise. Prioritize security, auth least-privilege, data integrity, lease/recovery safety, and review-evidence completeness. Avoid style-only nits unless they create a real user-facing or maintenance risk."
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  review_status: true
+  review_details: false
+  commit_status: true
+  fail_commit_status: false
+  collapse_walkthrough: true
+  changed_files_summary: false
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  assess_linked_issues: true
+  related_issues: false
+  related_prs: false
+  suggested_labels: false
+  auto_apply_labels: false
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+  in_progress_fortune: false
+  poem: false
+  enable_prompt_for_ai_agents: true
+
+  auto_review:
+    enabled: false
+    description_keyword: "coderabbit:review"
+    labels:
+      - "coderabbit-review"
+      - "!coderabbit-skip"
+    drafts: false
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 1
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+      - "[skip review]"
+      - "[no review]"
+      - "draft:"
+      - "generated"
+    ignore_usernames:
+      - "dependabot[bot]"
+      - "renovate[bot]"
+      - "github-actions[bot]"
+
+  # Drop generated/vendor trees from review. Add more globs for your stack.
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/.next/**"
+    - "!**/.vite/**"
+    - "!**/coverage/**"
+    - "!**/playwright-report/**"
+    - "!**/test-results/**"
+    - "!**/blob-report/**"
+    - "!**/.cache/**"
+    - "!**/generated/**"
+    - "!**/manage/data/**"
+    - "!**/*.log"
+    - "!**/*.map"
+
+  # Soft, product-specific guidance. Rewrite these paths if you fork the app
+  # or drop this file into a different Node/Vite repo.
+  path_instructions:
+    - path: ".coderabbit.yaml"
+      instructions: |
+        Validate against the current CodeRabbit schema. Use profile chill or assertive; do not use unsupported profile names. Prefer opt-in review controls and an early incremental-review pause for cost control. Keep comments generic so forks can customize path_instructions for their stack.
+
+    - path: ".github/workflows/**"
+      instructions: |
+        Review CI safety first. Flag secrets exposure, overly broad permissions, and unexpected deploy or write steps. This repo currently builds, runs unit tests, and smokes on pull requests. Do not assume a required cloud host or deploy pipeline.
+
+    - path: "**/Dockerfile"
+      instructions: |
+        Check Node image hygiene: a deterministic install where practical, PORT or 8080 handling that matches this Dockerfile, no embedded secrets, and a minimal production runtime. Do not require a specific cloud host. Binding 0.0.0.0 in the image is expected.
+
+    - path: "manage/server/**"
+      instructions: |
+        Prioritize auth least-privilege (operator or admin versus agent), CSRF on cookie writes, lease and recovery safety, review-evidence completion gates, Firestore revision and idempotency, and GitHub sync freshness. Agents must not gain operator-only actions. Heartbeats must not extend claims or leases. Marking a packet done needs delivery evidence or an explicit operator override. Stale revisions should stay 409. Prefer request-budgeted, freshness-aware GitHub cache updates over unconditional refetch.
+
+    - path: "manage/src/**"
+      instructions: |
+        Review the operator console for auth-sensitive UI, consistent packet state, and leakage of operator-only actions to agent or viewer roles. Keep TASK- packet key handling generic. Prefer existing CSS custom properties over hardcoded colors. Do not invent a second product brand or catalog id scheme.
+
+    - path: "scripts/**"
+      instructions: |
+        CLI and smoke scripts talk to the HTTP contract. Flag token mix-ups (operator versus agent), unsafe production defaults, and recovery or closeout commands that skip lease safety or completion evidence. Prefer the documented npm scripts over one-off wrappers.
+
+    - path: "**/*.{test,spec}.mjs"
+      instructions: |
+        Prefer preserving or strengthening tests for auth, lease and recovery, completion evidence, GitHub sync freshness, and brand-leakage guards. Do not suggest removing guard tests to make a change pass.
+
+    - path: "package.json"
+      instructions: |
+        Review scripts and dependencies for unexpected generators, security-sensitive packages, and deploy bypasses. Prefer repo-native commands such as npm run test:unit, npm run smoke, and npm run build.
+
+    - path: ".env.example"
+      instructions: |
+        Keep examples generic and non-secret. Flag colliding operator and agent token examples for production, missing required production secrets, and undocumented env vars that change auth or storage behavior.
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "warning"
+      requirements: "Prefer a TASK- packet key in the title when a matching packet exists, plus a concise behavior-oriented summary. Packet keys are recommended, not required, for chores, docs, or repo-wide hygiene."
+    description:
+      mode: "warning"
+    issue_assessment:
+      mode: "warning"
+    custom_checks:
+      - name: "Validation evidence"
+        mode: "warning"
+        instructions: |
+          The PR should list relevant local validation (unit tests, smoke, build, or Playwright when UI changed) or say why a check was skipped. Warn when a risky change lacks validation evidence.
+
+      - name: "Packet and auth safety"
+        mode: "warning"
+        instructions: |
+          Flag changes that weaken operator versus agent least-privilege, lease or recovery safety, review-evidence completion gates, Firestore revision or idempotency, or GitHub sync freshness. This is soft guidance. Do not fail only because a PR title omits a TASK- key.
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+
+  tools:
+    github-checks:
+      enabled: true
+      timeout_ms: 300000
+    shellcheck:
+      enabled: true
+    hadolint:
+      enabled: true
+    dotenvLint:
+      enabled: true
+    osvScanner:
+      enabled: true
+    reactDoctor:
+      enabled: true
+    presidio:
+      enabled: true
+    languagetool:
+      enabled: false
+    markdownlint:
+      enabled: false
+
+chat:
+  art: false
+  auto_reply: false
+  allow_non_org_members: true
+
+knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: false
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "**/CLAUDE.md"
+      - "**/GEMINI.md"
+      - "**/AGENTS.md"
+      - "**/AGENT.md"
+      - "**/.cursorrules"
+  learnings:
+    scope: "auto"
+    approval_delay: 0
+  issues:
+    scope: "auto"
+  pull_requests:
+    scope: "auto"
+  automatic_repository_linking: false

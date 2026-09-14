@@ -265,6 +265,7 @@ import {
   listStateSnapshots,
   mutateJsonState,
   readJsonState,
+  readNextWorkItemKeyState,
   restoreStateSnapshot,
   verifyStateSnapshot,
   writeJsonState,
@@ -549,6 +550,36 @@ describe("Firestore work item storage", () => {
     expect(firestoreMock.collectionStore(FIRESTORE_WORK_ITEMS_COLLECTION).get("w-task-145").revision).toBe(1);
   });
 
+  it("reads one keyed packet without scanning the full collection", async () => {
+    await writeJsonState("work-items", [
+      { id: "w-task-145", key: "TASK-145", status: "ready_for_agent" },
+      { id: "w-task-146", key: "TASK-146", status: "done" },
+    ]);
+    firestoreMock.queryGets.length = 0;
+
+    const result = await readJsonState("work-items", () => [], {
+      includePersistence: true,
+      workItemKey: "TASK-145",
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ key: "TASK-145", status: "ready_for_agent" });
+    expect(firestoreMock.queryGets).toEqual([]);
+  });
+
+  it("reads the next packet key from the reconciled counter", async () => {
+    firestoreMock.collectionStore(FIRESTORE_COLLECTION).set("work-items-counter", {
+      key: "work-items-counter",
+      currentNumber: 894,
+      reconciliationVersion: 1,
+      recentCreates: [],
+    });
+    firestoreMock.queryGets.length = 0;
+
+    await expect(readNextWorkItemKeyState(() => [])).resolves.toBe("TASK-895");
+    expect(firestoreMock.queryGets).toEqual([]);
+  });
+
   it("migrates legacy work items before the first create allocates a TASK- key", async () => {
     const legacyItems = [{ id: "w-task-145", key: "TASK-145", status: "ready_for_agent" }];
     firestoreMock.collectionStore(FIRESTORE_COLLECTION).set("work-items", {
@@ -628,6 +659,30 @@ describe("Firestore work item storage", () => {
       limitValue: null,
       filters: [],
     }));
+  });
+
+  it("advances a stale packet counter before a bulk replacement", async () => {
+    firestoreMock.collectionStore(FIRESTORE_COLLECTION).set("work-items-counter", {
+      key: "work-items-counter",
+      currentNumber: 101,
+      reconciliationVersion: 1,
+      recentCreates: [],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    await writeJsonState("work-items", [
+      { id: "w-task-102", key: "TASK-102", status: "ready_for_agent" },
+    ]);
+    const result = await createWorkItemState(
+      (key) => ({ id: `w-${key.toLowerCase()}`, key, status: "draft" }),
+      { fallbackFactory: () => [], idempotencyKey: "after-bulk-replacement" },
+    );
+
+    expect(result.workItem.key).toBe("TASK-103");
+    expect(firestoreMock.collectionStore(FIRESTORE_COLLECTION).get("work-items-counter")).toMatchObject({
+      currentNumber: 103,
+      reconciliationVersion: 1,
+    });
   });
 
   it("deletes stale per-item documents when the work item list shrinks", async () => {

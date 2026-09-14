@@ -277,6 +277,11 @@ function firestoreWorkItemDocumentId(item, index, usedIds) {
   return `${baseId}-${suffix}`;
 }
 
+function firestoreWorkItemDocumentIdForKey(key) {
+  const normalizedKey = String(key || "").trim().toUpperCase();
+  return safeFirestoreDocumentId(`w-${normalizedKey.toLowerCase()}`, normalizedKey.toLowerCase());
+}
+
 function safePacketNumber(value) {
   const number = Number(value);
   return Number.isSafeInteger(number) && number >= 0 ? number : 0;
@@ -680,9 +685,35 @@ async function markWorkItemsCollectionInitialized(firestore, now = new Date().to
   });
 }
 
-async function readFirestoreWorkItems(fallbackFactory, { includePersistence = false } = {}) {
+async function readFirestoreWorkItems(fallbackFactory, { includePersistence = false, workItemKey = "" } = {}) {
   const firestore = await getFirestoreClient();
-  const querySnapshot = await firestoreWorkItemsCollection(firestore).orderBy("order", "asc").get();
+  const collection = firestoreWorkItemsCollection(firestore);
+  const normalizedKey = String(workItemKey || "").trim().toUpperCase();
+
+  if (normalizedKey) {
+    const directSnapshot = await collection.doc(firestoreWorkItemDocumentIdForKey(normalizedKey)).get();
+    let matchingDocument = directSnapshot.exists ? directSnapshot : null;
+
+    if (!matchingDocument) {
+      const packetNumber = workItemNumber(normalizedKey);
+      if (packetNumber > 0) {
+        const querySnapshot = await collection.where("packetNumber", "==", packetNumber).limit(1).get();
+        matchingDocument = querySnapshot.docs[0] || null;
+      }
+    }
+
+    if (matchingDocument) {
+      const data = matchingDocument.data();
+      return [includePersistence ? withWorkItemPersistence(data.payload, data) : clone(data.payload)];
+    }
+
+    const initializedSnapshot = await collection.limit(1).get();
+    if (initializedSnapshot.docs.length > 0) {
+      return [];
+    }
+  }
+
+  const querySnapshot = await collection.orderBy("order", "asc").get();
 
   if (querySnapshot.docs.length > 0) {
     return querySnapshot.docs.map((doc) => {
@@ -696,9 +727,12 @@ async function readFirestoreWorkItems(fallbackFactory, { includePersistence = fa
 
   if (isUnmigratedLegacyWorkItems(legacyData)) {
     await writeFirestoreWorkItems(legacyData.payload, { skipSnapshot: true });
+    const selectedPayload = normalizedKey
+      ? legacyData.payload.filter((item) => String(item?.key || "").toUpperCase() === normalizedKey)
+      : legacyData.payload;
     return includePersistence
-      ? legacyData.payload.map((item) => withWorkItemPersistence(item, { revision: 1 }))
-      : clone(legacyData.payload);
+      ? selectedPayload.map((item) => withWorkItemPersistence(item, { revision: 1 }))
+      : clone(selectedPayload);
   }
 
   if (isInitializedWorkItemsCollection(legacyData)) {
@@ -707,9 +741,28 @@ async function readFirestoreWorkItems(fallbackFactory, { includePersistence = fa
 
   const fallback = fallbackFrom(fallbackFactory);
   await writeFirestoreWorkItems(fallback, { skipSnapshot: true });
-  return includePersistence
-    ? fallback.map((item) => withWorkItemPersistence(item, { revision: 1 }))
+  const selectedFallback = normalizedKey
+    ? fallback.filter((item) => String(item?.key || "").toUpperCase() === normalizedKey)
     : fallback;
+  return includePersistence
+    ? selectedFallback.map((item) => withWorkItemPersistence(item, { revision: 1 }))
+    : selectedFallback;
+}
+
+async function nextFirestoreWorkItemKey(fallbackFactory) {
+  const firestore = await getFirestoreClient();
+  const counterRef = firestore.collection(getFirestoreCollection()).doc(workItemCounterDocumentId);
+  const counterSnapshot = await counterRef.get();
+  const counterData = counterSnapshot.data() || {};
+
+  if (
+    counterSnapshot.exists
+    && safePacketNumber(counterData.reconciliationVersion) >= workItemCounterReconciliationVersion
+  ) {
+    return `${getWorkItemKeyPrefix()}-${Math.max(safePacketNumber(counterData.currentNumber), 100) + 1}`;
+  }
+
+  return nextWorkItemKeyFromItems(await readFirestoreWorkItems(fallbackFactory));
 }
 
 async function readFirestoreJson(key, fallbackFactory, options = {}) {
@@ -818,6 +871,53 @@ async function commitFirestoreTransactions(firestore, operations) {
   }
 }
 
+async function reconcileFirestoreWorkItemCounter(firestore, items) {
+  const replacementMax = items.reduce(
+    (max, item) => Math.max(max, workItemNumber(item)),
+    100,
+  );
+  const counterRef = firestore.collection(getFirestoreCollection()).doc(workItemCounterDocumentId);
+  const initialSnapshot = await counterRef.get();
+  const initial = initialSnapshot.data() || {};
+
+  if (
+    initialSnapshot.exists
+    && safePacketNumber(initial.currentNumber) >= replacementMax
+    && safePacketNumber(initial.reconciliationVersion) >= workItemCounterReconciliationVersion
+  ) {
+    return;
+  }
+
+  await firestore.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(counterRef);
+    const current = snapshot.data() || {};
+    const currentNumber = Math.max(safePacketNumber(current.currentNumber), replacementMax, 100);
+    const reconciliationVersion = Math.max(
+      safePacketNumber(current.reconciliationVersion),
+      workItemCounterReconciliationVersion,
+    );
+
+    if (
+      snapshot.exists
+      && safePacketNumber(current.currentNumber) === currentNumber
+      && safePacketNumber(current.reconciliationVersion) === reconciliationVersion
+    ) {
+      return;
+    }
+
+    transaction.set(counterRef, {
+      ...current,
+      key: "work-items-counter",
+      currentNumber,
+      reconciliationVersion,
+      recentCreates: Array.isArray(current.recentCreates)
+        ? current.recentCreates.slice(-workItemCreateHistoryLimit)
+        : [],
+      updatedAt: new Date().toISOString(),
+    });
+  });
+}
+
 async function writeFirestoreWorkItems(value) {
   if (!Array.isArray(value)) {
     throw Object.assign(new Error("Manage work-items state must be an array"), { statusCode: 500 });
@@ -830,6 +930,10 @@ async function writeFirestoreWorkItems(value) {
   const nextIds = new Set();
   const operations = [];
   const now = new Date().toISOString();
+
+  // Advance the high-water mark before replacing documents. A failed replacement
+  // may leave a harmless gap, but a stale counter could allocate a duplicate key.
+  await reconcileFirestoreWorkItemCounter(firestore, value);
 
   for (const [index, item] of value.entries()) {
     const id = firestoreWorkItemDocumentId(item, index, nextIds);
@@ -1245,6 +1349,20 @@ export async function readJsonState(key, fallbackFactory, options = {}) {
 
   if (backend === "firestore") {
     return readFirestoreJson(key, fallbackFactory, options);
+  }
+
+  throw new Error(`Unsupported MANAGE_STORAGE_BACKEND: ${backend}`);
+}
+
+export async function readNextWorkItemKeyState(fallbackFactory = []) {
+  const backend = getStorageBackend();
+
+  if (backend === "file") {
+    return nextWorkItemKeyFromItems(await readFileJson("work-items", fallbackFactory));
+  }
+
+  if (backend === "firestore") {
+    return nextFirestoreWorkItemKey(fallbackFactory);
   }
 
   throw new Error(`Unsupported MANAGE_STORAGE_BACKEND: ${backend}`);

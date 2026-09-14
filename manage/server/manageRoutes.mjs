@@ -39,6 +39,7 @@ import {
   createWorkItemForPullRequest,
   importGithubIssues,
   linkMergedPullRequest,
+  getWorkItem,
   listWorkItems,
   patchWorkItem,
   recordGithubIssue,
@@ -192,8 +193,7 @@ function githubStatusSummary() {
 }
 
 async function findWorkItem(key) {
-  const items = await listWorkItems();
-  return items.find((candidate) => candidate.key === String(key || "").toUpperCase());
+  return getWorkItem(key);
 }
 
 function completionOverrideRequested(payload = {}) {

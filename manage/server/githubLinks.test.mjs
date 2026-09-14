@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { findGithubMatchesForItem, reconcileMergedPullRequests } from "./githubLinks.mjs";
+import {
+  completionLinkMatches,
+  findCompletionPullRequest,
+  findGithubMatchesForItem,
+  parseGithubPullRequestRef,
+  reconcileMergedPullRequests,
+} from "./githubLinks.mjs";
 
 const CSC_LEAKAGE = /Commerce Street|csc-workspace|CSC-|COM-|Harbor|RegVault|csc-crm-io/i;
 
@@ -113,6 +119,197 @@ describe("findGithubMatchesForItem", () => {
     });
     expect(matches.bestPrUrl).toBe(prUrl);
     expect(JSON.stringify(matches)).not.toMatch(CSC_LEAKAGE);
+  });
+});
+
+describe("parseGithubPullRequestRef", () => {
+  it("parses owner, repo, and number from a pull request URL", () => {
+    expect(parseGithubPullRequestRef("https://github.com/thejayer/agent-backlog/pull/21/")).toEqual({
+      owner: "thejayer",
+      repo: "agent-backlog",
+      slug: "thejayer/agent-backlog",
+      number: 21,
+      url: "https://github.com/thejayer/agent-backlog/pull/21",
+    });
+  });
+
+  it("rejects non-pull-request URLs", () => {
+    expect(parseGithubPullRequestRef("https://github.com/thejayer/agent-backlog")).toBeNull();
+    expect(parseGithubPullRequestRef("thejayer/agent-backlog#21")).toBeNull();
+  });
+});
+
+describe("findCompletionPullRequest", () => {
+  const prUrl = "https://github.com/thejayer/docs-site/pull/88";
+  const merged = {
+    number: 88,
+    url: prUrl,
+    mergedAt: "2026-07-31T13:11:58Z",
+    mergeCommitSha: "a4e7bf67",
+  };
+
+  it("uses already-linked githubLinks when the packet repo cache misses", () => {
+    const resolved = findCompletionPullRequest(
+      {
+        key: "TASK-352",
+        repo: "agent-backlog",
+        githubPrUrl: "https://github.com/thejayer/agent-backlog/pull/21",
+        githubLinks: {
+          source: "github-token",
+          repoSlug: "thejayer/agent-backlog",
+          pullRequests: [{
+            number: 21,
+            url: "https://github.com/thejayer/agent-backlog/pull/21",
+            mergedAt: "2026-07-31T03:23:51Z",
+            mergeCommitSha: "cfa8f212",
+          }],
+        },
+      },
+      {},
+      { pullRequests: [], repoSlug: "" },
+      { source: "github-cache", repos: [] },
+    );
+
+    expect(resolved.source).toBe("github-token");
+    expect(resolved.repoSlug).toBe("thejayer/agent-backlog");
+    expect(resolved.pullRequest.mergeCommitSha).toBe("cfa8f212");
+    expect(JSON.stringify(resolved)).not.toMatch(CSC_LEAKAGE);
+  });
+
+  it("finds a merged PR in another cached repo when packet.repo does not match", () => {
+    const resolved = findCompletionPullRequest(
+      { key: "TASK-361", repo: "agent-backlog", githubPrUrl: prUrl },
+      {},
+      { pullRequests: [], repoSlug: "" },
+      {
+        source: "github-cache",
+        repos: [
+          {
+            id: "docs-site",
+            slug: "thejayer/docs-site",
+            mergedPulls: [merged],
+          },
+        ],
+      },
+    );
+
+    expect(resolved.source).toBe("github-cache");
+    expect(resolved.repoSlug).toBe("thejayer/docs-site");
+    expect(resolved.pullRequest).toMatchObject(merged);
+    expect(JSON.stringify(resolved)).not.toMatch(CSC_LEAKAGE);
+  });
+
+  it("returns a parseable URL for live GitHub delivery when nothing is cached or linked", () => {
+    const resolved = findCompletionPullRequest(
+      { key: "TASK-436", repo: "research-notes", githubPrUrl: "https://github.com/thejayer/research-notes/pull/111" },
+      {},
+      { pullRequests: [], repoSlug: "" },
+      { source: "github-cache", repos: [] },
+    );
+
+    expect(resolved.pullRequest).toBeNull();
+    expect(resolved.parsed).toEqual({
+      owner: "thejayer",
+      repo: "research-notes",
+      slug: "thejayer/research-notes",
+      number: 111,
+      url: "https://github.com/thejayer/research-notes/pull/111",
+    });
+    expect(JSON.stringify(resolved)).not.toMatch(CSC_LEAKAGE);
+  });
+});
+
+describe("completionLinkMatches", () => {
+  const requestedUrl = "https://github.com/thejayer/agent-backlog/pull/21";
+  const resolvedPullRequest = {
+    number: 21,
+    url: requestedUrl,
+    branch: "fix/task-352",
+    mergedAt: "2026-07-31T03:23:51Z",
+    mergeCommitSha: "cfa8f212",
+  };
+  const workItem = { key: "TASK-352", repo: "agent-backlog", githubBranch: "legacy-branch" };
+  const unrelatedMatches = {
+    repoId: "agent-backlog",
+    repoSlug: "thejayer/agent-backlog",
+    source: "github-cache",
+    bestPrUrl: "https://github.com/thejayer/agent-backlog/pull/7",
+    pullRequests: [{
+      number: 7,
+      url: "https://github.com/thejayer/agent-backlog/pull/7",
+      mergedAt: "2026-06-12T11:55:00.000Z",
+    }],
+    branches: [{ name: "unrelated" }],
+    issues: [],
+    workflowRuns: [],
+  };
+
+  it("persists the resolved pull request instead of unrelated packet-repo cache matches", () => {
+    const linkMatches = completionLinkMatches(
+      workItem,
+      {
+        pullRequest: resolvedPullRequest,
+        repoSlug: "thejayer/agent-backlog",
+        source: "github-token",
+        requestedUrl,
+      },
+      unrelatedMatches,
+    );
+
+    expect(linkMatches).toMatchObject({
+      repoId: "agent-backlog",
+      repoSlug: "thejayer/agent-backlog",
+      source: "github-token",
+      bestPrUrl: requestedUrl,
+      bestBranch: "fix/task-352",
+      pullRequests: [resolvedPullRequest],
+      branches: [],
+      issues: [],
+      workflowRuns: [],
+    });
+    expect(linkMatches.pullRequests).not.toEqual(unrelatedMatches.pullRequests);
+    expect(JSON.stringify(linkMatches)).not.toMatch(CSC_LEAKAGE);
+  });
+
+  it("returns cache matches only when they already include the requested merged pull request", () => {
+    const matchingCache = {
+      ...unrelatedMatches,
+      bestPrUrl: requestedUrl,
+      pullRequests: [resolvedPullRequest, ...unrelatedMatches.pullRequests],
+      branches: [{ name: "fix/task-352" }],
+    };
+
+    expect(completionLinkMatches(
+      workItem,
+      { pullRequest: resolvedPullRequest, requestedUrl },
+      matchingCache,
+    )).toBe(matchingCache);
+  });
+
+  it("treats mixed-case GitHub URLs as the same requested pull request", () => {
+    const mixedCaseUrl = "https://GitHub.com/TheJayer/Agent-Backlog/pull/21/";
+    const matchingCache = {
+      ...unrelatedMatches,
+      bestPrUrl: requestedUrl,
+      pullRequests: [resolvedPullRequest],
+    };
+
+    expect(completionLinkMatches(
+      workItem,
+      {
+        pullRequest: { ...resolvedPullRequest, url: mixedCaseUrl },
+        requestedUrl: mixedCaseUrl,
+      },
+      matchingCache,
+    )).toBe(matchingCache);
+  });
+
+  it("returns null when neither the cache nor the resolver has the requested pull request", () => {
+    expect(completionLinkMatches(
+      workItem,
+      { pullRequest: null, requestedUrl },
+      unrelatedMatches,
+    )).toBeNull();
   });
 });
 

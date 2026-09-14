@@ -530,9 +530,9 @@ describe("Firestore work item storage", () => {
       (key) => ({ id: `w-${key.toLowerCase()}`, key, title: "After empty restore" }),
       { fallbackFactory: () => [{ id: "seed-should-not-appear" }], idempotencyKey: "after-empty-restore" },
     );
-    expect(created.workItem.key).toBe("TASK-101");
+    expect(created.workItem.key).toBe("TASK-146");
     await expect(readJsonState("work-items", () => [])).resolves.toEqual([
-      { id: "w-task-101", key: "TASK-101", title: "After empty restore" },
+      { id: "w-task-146", key: "TASK-146", title: "After empty restore" },
     ]);
   });
 

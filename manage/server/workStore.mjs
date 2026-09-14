@@ -16,7 +16,13 @@ import {
   workItemLinksPullRequest,
 } from "./githubLinks.mjs";
 import { appendPacketEvent, lifecyclePacketEvent, resetPacketEvents } from "./packetEventStore.mjs";
-import { createWorkItemState, nextWorkItemKeyFromItems, readJsonState, writeJsonState, writeWorkItemMutation } from "./storage.mjs";
+import {
+  createWorkItemState,
+  readJsonState,
+  readNextWorkItemKeyState,
+  writeJsonState,
+  writeWorkItemMutation,
+} from "./storage.mjs";
 
 const allowedStatuses = new Set(statusOptions.map((status) => status.id));
 const allowedPriorities = new Set(priorityOptions.map((priority) => priority.id));
@@ -228,12 +234,8 @@ function repoMatchesWorkItem(workItem, repo) {
   return Boolean(repo) && repoMatches(workItem, repo);
 }
 
-function nextKey(items) {
-  return nextWorkItemKeyFromItems(items);
-}
-
 export async function nextWorkItemKey() {
-  return nextKey(await readWorkItems());
+  return readNextWorkItemKeyState(() => clone(seedWorkItems));
 }
 
 function normalizeWorkItem(item) {
@@ -348,7 +350,7 @@ async function commitWorkItemMutation(items, index, nextItem, {
     await writeWorkItemMutation(nextItems, persistedItem);
   } catch (error) {
     if (error?.statusCode === 409 && operationId) {
-      const latestItems = await readWorkItems();
+      const latestItems = await readWorkItems(currentItem.key);
       const latest = latestItems.find((item) => item.key === currentItem.key);
       if (latest?._persistence?.recentOperationIds?.includes(operationId)) {
         return workItemMutationResult(latest, latestItems, { changed: false, idempotentReplay: true });
@@ -378,8 +380,11 @@ async function commitWorkItemMutation(items, index, nextItem, {
   return workItemMutationResult(persistedItem, nextItems);
 }
 
-export async function readWorkItems() {
-  const parsed = await readJsonState("work-items", () => clone(seedWorkItems), { includePersistence: true });
+export async function readWorkItems(workItemKey = "") {
+  const parsed = await readJsonState("work-items", () => clone(seedWorkItems), {
+    includePersistence: true,
+    workItemKey,
+  });
 
   if (!Array.isArray(parsed)) {
     throw Object.assign(new Error("Manage work-items state must contain an array"), { statusCode: 500 });
@@ -401,6 +406,12 @@ export async function resetWorkItems() {
 
 export async function listWorkItems() {
   return publicWorkItems(await readWorkItems());
+}
+
+export async function getWorkItem(key) {
+  const normalizedKey = String(key || "").trim().toUpperCase();
+  const item = (await readWorkItems(normalizedKey)).find((candidate) => candidate.key === normalizedKey);
+  return item ? publicWorkItem(item) : null;
 }
 
 async function createWorkItemUnlocked(payload) {
@@ -519,7 +530,7 @@ export async function createWorkItemForPullRequest(payload) {
 }
 
 async function patchWorkItemUnlocked(key, updates, options = {}) {
-  const items = await readWorkItems();
+  const items = await readWorkItems(key);
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
 
@@ -628,7 +639,7 @@ export async function patchWorkItem(key, updates, options = {}) {
 }
 
 async function claimWorkItemUnlocked(key, payload = {}, { allowForce = false } = {}) {
-  const items = await readWorkItems();
+  const items = await readWorkItems(key);
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
 
@@ -732,7 +743,7 @@ function assertObservedAgentRun(currentItem, payload) {
 }
 
 async function readObservedRecoveryItem(key, payload) {
-  const items = await readWorkItems();
+  const items = await readWorkItems(key);
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
 
@@ -877,7 +888,7 @@ async function updateTaskStatusUnlocked(key, payload = {}, options = {}) {
     throw Object.assign(new Error(`Invalid status: ${status}`), { statusCode: 400 });
   }
 
-  const items = await readWorkItems();
+  const items = await readWorkItems(key);
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
 
@@ -979,7 +990,7 @@ export async function updateTaskStatus(key, payload = {}, options = {}) {
 }
 
 async function applyGithubMatchesUnlocked(key, matches = {}) {
-  const items = await readWorkItems();
+  const items = await readWorkItems(key);
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
 
@@ -1022,7 +1033,7 @@ async function linkMergedPullRequestUnlocked(key, {
   expectedRevision,
   idempotencyKey,
 } = {}) {
-  const items = await readWorkItems();
+  const items = await readWorkItems(key);
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
 
@@ -1075,7 +1086,7 @@ export async function linkMergedPullRequest(key, payload = {}) {
 }
 
 async function recordGithubIssueUnlocked(key, issue = {}) {
-  const items = await readWorkItems();
+  const items = await readWorkItems(key);
   const normalizedKey = String(key || "").toUpperCase();
   const index = items.findIndex((item) => item.key === normalizedKey);
 

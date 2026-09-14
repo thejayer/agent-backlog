@@ -233,6 +233,120 @@ export function findMergedPullRequest(githubCache, pullRequestUrl) {
   return null;
 }
 
+export function parseGithubPullRequestRef(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/i);
+
+  if (!match) {
+    return null;
+  }
+
+  const number = Number(match[3]);
+
+  if (!Number.isInteger(number) || number <= 0) {
+    return null;
+  }
+
+  return {
+    owner: match[1],
+    repo: match[2],
+    slug: `${match[1]}/${match[2]}`,
+    number,
+    url: `https://github.com/${match[1]}/${match[2]}/pull/${number}`,
+  };
+}
+
+export function requestedCompletionPullRequestUrl(workItem, payload = {}) {
+  return String(payload.githubPrUrl || workItem?.lastAgentUpdate?.githubPrUrl || workItem?.githubPrUrl || "").trim();
+}
+
+function mergedPullRequestWithUrl(pullRequests, requestedUrl) {
+  const url = normalizedGithubUrl(requestedUrl);
+
+  if (!url) {
+    return null;
+  }
+
+  return (pullRequests || []).find((pullRequest) => (
+    pullRequest?.mergedAt && pullRequestMatchesUrl(pullRequest, url)
+  )) || null;
+}
+
+export function findCompletionPullRequest(workItem, payload = {}, matches = {}, githubCache = {}) {
+  const requestedUrl = requestedCompletionPullRequestUrl(workItem, payload);
+  const parsed = parseGithubPullRequestRef(requestedUrl);
+
+  if (!requestedUrl) {
+    return { pullRequest: null, repoSlug: "", source: "", parsed: null, requestedUrl: "" };
+  }
+
+  const fromMatches = mergedPullRequestWithUrl(matches?.pullRequests, requestedUrl);
+  if (fromMatches) {
+    return {
+      pullRequest: fromMatches,
+      repoSlug: matches.repoSlug || parseGithubPullRequestRef(fromMatches.url)?.slug || parsed?.slug || "",
+      source: matches.source || "item-cache",
+      parsed,
+      requestedUrl,
+    };
+  }
+
+  const fromLinks = mergedPullRequestWithUrl(workItem?.githubLinks?.pullRequests, requestedUrl);
+  if (fromLinks) {
+    return {
+      pullRequest: fromLinks,
+      repoSlug: workItem.githubLinks?.repoSlug || parseGithubPullRequestRef(fromLinks.url)?.slug || parsed?.slug || "",
+      source: workItem.githubLinks?.source || "github-links",
+      parsed,
+      requestedUrl,
+    };
+  }
+
+  const fromCache = findMergedPullRequest(githubCache, requestedUrl);
+  if (fromCache) {
+    return {
+      pullRequest: fromCache.pullRequest,
+      repoSlug: fromCache.repo?.slug || parseGithubPullRequestRef(fromCache.pullRequest?.url)?.slug || parsed?.slug || "",
+      source: githubCache?.source || "github-cache",
+      parsed,
+      requestedUrl,
+    };
+  }
+
+  return { pullRequest: null, repoSlug: parsed?.slug || "", source: "", parsed, requestedUrl };
+}
+
+export function completionLinkMatches(workItem, resolved, matches) {
+  const requestedUrl = normalizedGithubUrl(resolved?.requestedUrl || resolved?.pullRequest?.url);
+  const matchesRequestedPullRequest = Boolean(
+    requestedUrl
+    && (matches?.pullRequests || []).some((pullRequest) => (
+      pullRequest?.mergedAt && normalizedGithubUrl(pullRequest?.url) === requestedUrl
+    )),
+  );
+
+  if (matchesRequestedPullRequest) {
+    return matches;
+  }
+
+  if (!resolved?.pullRequest) {
+    return null;
+  }
+
+  return {
+    repoId: workItem.repo,
+    repoSlug: resolved.repoSlug,
+    source: resolved.source || "github-delivery",
+    matchedAt: new Date().toISOString(),
+    bestBranch: resolved.pullRequest.branch || workItem.githubBranch || "",
+    bestPrUrl: resolved.pullRequest.url,
+    pullRequests: [resolved.pullRequest],
+    branches: [],
+    issues: [],
+    workflowRuns: [],
+  };
+}
+
 export function reconcileMergedPullRequests(workItems = [], githubCache = {}) {
   const linkedUrls = new Set(
     workItems

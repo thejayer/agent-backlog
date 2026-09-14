@@ -1,27 +1,13 @@
 import {
+  completionLinkMatches,
+  findCompletionPullRequest,
   findGithubMatchesForItem,
-  findMergedPullRequest,
-  hasGithubMatches,
-  uniquePullRequests,
+  normalizedGithubUrl,
+  parseGithubPullRequestRef,
 } from "./githubLinks.mjs";
-import { parseGithubPullRequestUrl } from "./githubSync.mjs";
 
-function normalizedGithubUrl(value) {
-  return String(value || "").trim().replace(/\/$/, "");
-}
-
-export function completionPullRequest(workItem, payload, matches) {
-  const requestedUrl = normalizedGithubUrl(
-    payload.githubPrUrl || workItem.lastAgentUpdate?.githubPrUrl || workItem.githubPrUrl,
-  );
-
-  if (!requestedUrl) {
-    return null;
-  }
-
-  return (matches.pullRequests || []).find(
-    (pullRequest) => normalizedGithubUrl(pullRequest?.url) === requestedUrl && pullRequest?.mergedAt,
-  ) || null;
+export function completionPullRequest(workItem, payload, matches, githubCache = {}) {
+  return findCompletionPullRequest(workItem, payload, matches, githubCache).pullRequest;
 }
 
 export function verifiedCompletionWriteback(evidence) {
@@ -43,9 +29,10 @@ export function buildMergedPullRequestMatches({
   githubCache,
   fetched,
   parsed,
+  source,
 } = {}) {
   return {
-    source: githubCache?.source || "github-cache",
+    source: source || githubCache?.source || "github-cache",
     repoId: workItem?.repo || "",
     repoSlug: parsed?.slug || "",
     matchedAt: new Date().toISOString(),
@@ -64,30 +51,12 @@ export function buildMergedPullRequestMatches({
   };
 }
 
-function matchesWithCachedPullRequest(workItem, githubCache, payload = {}) {
-  const matches = findGithubMatchesForItem(workItem, githubCache);
-
-  if (completionPullRequest(workItem, payload, matches)) {
-    return matches;
-  }
-
-  const cached = findMergedPullRequest(
-    githubCache,
-    payload.githubPrUrl || workItem.lastAgentUpdate?.githubPrUrl || workItem.githubPrUrl,
-  );
-
-  if (!cached?.pullRequest) {
-    return matches;
-  }
-
+function evidenceTarget(resolved) {
+  const parsed = resolved?.parsed || parseGithubPullRequestRef(resolved?.pullRequest?.url || resolved?.requestedUrl);
   return {
-    ...matches,
-    repoId: cached.repo.id || cached.repo.name || matches.repoId,
-    repoSlug: cached.repo.slug || matches.repoSlug,
-    source: githubCache?.source || matches.source || "github-cache",
-    bestPrUrl: cached.pullRequest.url || matches.bestPrUrl,
-    bestBranch: cached.pullRequest.branch || matches.bestBranch,
-    pullRequests: uniquePullRequests([cached.pullRequest, ...(matches.pullRequests || [])]),
+    repoSlug: resolved?.repoSlug || parsed?.slug || "",
+    number: resolved?.pullRequest?.number || parsed?.number || 0,
+    url: resolved?.pullRequest?.url || resolved?.requestedUrl || parsed?.url || "",
   };
 }
 
@@ -96,35 +65,36 @@ export async function resolveCompletionGithubEvidence(workItem, payload = {}, {
   localGithubCache = false,
   fetchEvidence,
 } = {}) {
-  const matches = matchesWithCachedPullRequest(workItem, githubCache, payload);
-  let pullRequest = completionPullRequest(workItem, payload, matches);
-  let completionGithubMatches = pullRequest && hasGithubMatches(matches) ? matches : null;
+  const matches = findGithubMatchesForItem(workItem, githubCache);
+  const resolved = findCompletionPullRequest(workItem, payload, matches, githubCache);
+  const pullRequest = resolved.pullRequest;
+  const completionGithubMatches = completionLinkMatches(workItem, resolved, matches);
 
-  if (!pullRequest && !localGithubCache && typeof fetchEvidence === "function") {
-    const parsed = parseGithubPullRequestUrl(
-      payload.githubPrUrl || workItem.lastAgentUpdate?.githubPrUrl || workItem.githubPrUrl,
-    );
-
-    if (parsed) {
-      try {
-        const evidence = await fetchEvidence(parsed.slug, parsed.number);
-        const fetched = evidence?.pullRequest;
-        if (fetched?.mergedAt) {
-          const liveMatches = buildMergedPullRequestMatches({
+  if (!pullRequest && !localGithubCache && typeof fetchEvidence === "function" && resolved.parsed) {
+    try {
+      const evidence = await fetchEvidence(resolved.parsed.slug, resolved.parsed.number);
+      const fetched = evidence?.pullRequest;
+      if (fetched?.mergedAt) {
+        if (normalizedGithubUrl(fetched.url) !== normalizedGithubUrl(resolved.parsed.url)) {
+          throw new Error("GitHub returned evidence for a different pull request");
+        }
+        return {
+          completionGithubMatches: buildMergedPullRequestMatches({
             workItem,
             githubCache,
             fetched,
-            parsed,
-          });
-          return {
-            completionGithubMatches: liveMatches,
-            verifiedCompletionWriteback: verifiedCompletionWriteback(evidence),
-          };
-        }
-      } catch {
-        // Fall through to the packet-level evidence check. A missing or
-        // unreachable pull request is treated as incomplete delivery evidence.
+            parsed: resolved.parsed,
+            source: "github-delivery",
+          }),
+          verifiedCompletionWriteback: verifiedCompletionWriteback(evidence),
+        };
       }
+    } catch (error) {
+      if (error.message === "GitHub returned evidence for a different pull request") {
+        throw Object.assign(new Error(`Unable to verify delivery evidence: ${error.message}`), { statusCode: 409 });
+      }
+      // Fall through to the packet-level evidence check. A missing or
+      // unreachable pull request is treated as incomplete delivery evidence.
     }
   }
 
@@ -133,9 +103,10 @@ export async function resolveCompletionGithubEvidence(workItem, payload = {}, {
   }
 
   try {
+    const target = evidenceTarget(resolved);
     const evidence = localGithubCache
       ? pullRequest.deliveryEvidence
-      : await fetchEvidence(matches.repoSlug, pullRequest.number);
+      : await fetchEvidence(target.repoSlug, target.number);
 
     if (
       !evidence

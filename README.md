@@ -1,6 +1,7 @@
 # Agent Backlog
 
 [![CI](https://github.com/thejayer/agent-backlog/actions/workflows/ci.yml/badge.svg)](https://github.com/thejayer/agent-backlog/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/thejayer/agent-backlog)](LICENSE)
 
 A small task board that your **coding agents claim work from**.
 
@@ -14,9 +15,31 @@ review, and GitHub sync.
 It runs out of the box with **zero cloud setup** — file-backed storage, one
 command to start. Firestore is an optional backend when you want to deploy it.
 
+![Agent Backlog console: backlog packets, selected packet workspace, and generated agent prompt](docs/screenshots/console-backlog.png)
+
+The operator console above is the local file-backed app after `npm run dev` —
+no cloud account required.
+
+![Today view: next ready packet, attention inbox, and live agent runs](docs/screenshots/console-today.png)
+
 > **Working name.** "Agent Backlog" and the `agent-backlog` package name are
 > placeholders — rename freely. Internally the app/env vars use the `MANAGE_`
 > prefix; that is just a name, not a dependency on anything external.
+
+## Architecture
+
+Four moving parts:
+
+1. **Packets** — structured tasks (summary, outcome, acceptance, files, tests)
+   that render as agent prompts (`GET /agent/{key}.md`).
+2. **Lease claim** — `POST /api/agent/next/claim` hands a packet to one agent
+   for `leaseMinutes`. A live lease returns `409`; expired leases reopen.
+3. **Status writeback** — `POST /api/agent/tasks/{key}/status` records
+   `needs_review` / `done` / `blocked` plus branch, PR, tests, and blockers.
+4. **Storage** — JSON files under `manage/data/` by default. Set
+   `MANAGE_STORAGE_BACKEND=firestore` when you want a hosted backend.
+
+The rest of this README is the HTTP/CLI contract, auth model, and deploy path.
 
 ## Quickstart
 
